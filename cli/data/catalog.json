@@ -1,0 +1,19 @@
+{
+  "users": {
+    "columns": [
+      {
+        "name": "id",
+        "type": "INT"
+      },
+      {
+        "name": "name",
+        "type": "VARCHAR"
+      },
+      {
+        "name": "age",
+        "type": "INT"
+      }
+    ],
+    "row_count": 1
+  }
+}

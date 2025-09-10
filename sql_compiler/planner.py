@@ -27,20 +27,29 @@ class Planner:
             return self.plan_select(ast)
         elif ast.node_type == 'Delete':
             return self.plan_delete(ast)
+        elif ast.node_type == 'Update':  # 👈 新增
+            return self.plan_update(ast)
         else:
             raise Exception(f"Unsupported AST node type: {ast.node_type}")
 
     def plan_create_table(self, ast: ASTNode) -> ExecutionPlan:
         table_name = self._get_table_name(ast)
         columns_ast = self._find_child(ast, 'Columns')
-
         columns = []
         for column_ast in columns_ast.children:
             columns.append(column_ast.value)
 
+        # 👇 新增：提取约束
+        constraints = []
+        constraints_ast = self._find_child(ast, 'Constraints')
+        if constraints_ast and constraints_ast.node_type != 'NoConstraints':
+            for constraint_ast in constraints_ast.children:
+                constraints.append(constraint_ast.value)
+
         return ExecutionPlan('CreateTable', {
             'table_name': table_name,
-            'columns': columns
+            'columns': columns,
+            'constraints': constraints  # 👈 传递约束
         })
 
     def plan_insert(self, ast: ASTNode) -> ExecutionPlan:
@@ -108,6 +117,29 @@ class Planner:
 
         return ExecutionPlan('Delete', {
             'table_name': table_name,
+            'condition': condition
+        })
+
+    def plan_update(self, ast: ASTNode) -> ExecutionPlan:  # 👈 新增方法
+        table_name = self._get_table_name(ast)
+        # 提取 SET 子句
+        set_clause = []
+        set_clause_ast = self._find_child(ast, 'SetClause')
+        if set_clause_ast:
+            for assignment_ast in set_clause_ast.children:
+                col_ast = self._find_child(assignment_ast, 'Column')
+                val_ast = assignment_ast.children[1]  # 假设第二个子节点是值
+                col_name = col_ast.value
+                value = self._extract_expression(val_ast)
+                set_clause.append((col_name, value))
+        # 提取条件
+        condition = None
+        condition_ast = self._find_child(ast, 'Condition')
+        if condition_ast and condition_ast.children:
+            condition = self._extract_condition(condition_ast.children[0])
+        return ExecutionPlan('Update', {  # 👈 计划类型为 'Update'
+            'table_name': table_name,
+            'set_clause': set_clause,
             'condition': condition
         })
 

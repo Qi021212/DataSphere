@@ -8,7 +8,7 @@ from utils.constants import PAGE_SIZE
 class Page:
     def __init__(self, page_id: int, data: bytes = None):
         self.page_id = page_id
-        # 关键修复：确保 self.data 是一个可变的 bytearray
+        # 关键修改：确保 self.data 是一个可变的 bytearray
         if data is None:
             self.data = bytearray(PAGE_SIZE)
         else:
@@ -35,7 +35,9 @@ class Page:
         if size not in [1, 2, 4, 8]:
             raise ValueError(f"Unsupported integer size: {size}. Supported sizes are 1, 2, 4, 8.")
 
+        # 根据大小选择格式字符
         fmt = {1: 'b', 2: 'h', 4: 'i', 8: 'q'}[size]  # 'b'=int8, 'h'=int16, 'i'=int32, 'q'=int64
+
         return struct.unpack(fmt, self.data[offset:offset + size])[0]
 
     def set_int(self, offset: int, value: int, size: int = 4):
@@ -43,7 +45,9 @@ class Page:
         if size not in [1, 2, 4, 8]:
             raise ValueError(f"Unsupported integer size: {size}. Supported sizes are 1, 2, 4, 8.")
 
+        # 根据大小选择格式字符
         fmt = {1: 'b', 2: 'h', 4: 'i', 8: 'q'}[size]
+
         self.data[offset:offset + size] = struct.pack(fmt, value)
         self.is_dirty = True
 

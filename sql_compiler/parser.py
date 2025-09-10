@@ -27,7 +27,6 @@ class Parser:
         self.tokens = tokens
         self.current_pos = 0
         self.current_token = self.tokens[0] if self.tokens else None
-
         statements = []
         while self.current_token is not None:
             if self.current_token.token_type == TokenType.KEYWORD:
@@ -39,15 +38,15 @@ class Parser:
                     statements.append(self.parse_select())
                 elif self.current_token.lexeme == 'DELETE':
                     statements.append(self.parse_delete())
+                elif self.current_token.lexeme == 'UPDATE':  # 👈 新增
+                    statements.append(self.parse_update())
                 else:
                     self.error(f"Unexpected keyword: {self.current_token.lexeme}")
             else:
                 self.error(f"Unexpected token: {self.current_token.lexeme}")
-
             # 检查分号
             if self.current_token and self.current_token.lexeme == ';':
                 self.advance()
-
         if len(statements) == 1:
             return statements[0]
         return ASTNode('MultipleStatements', statements)
@@ -79,25 +78,43 @@ class Parser:
     def parse_create_table(self) -> ASTNode:
         self.expect(TokenType.KEYWORD, 'CREATE')
         self.expect(TokenType.KEYWORD, 'TABLE')
-
         table_name = self.expect(TokenType.IDENTIFIER).lexeme
         self.expect(TokenType.DELIMITER, '(')
-
         columns = []
-        while self.current_token and self.current_token.lexeme != ')':
-            column_name = self.expect(TokenType.IDENTIFIER).lexeme
-            column_type = self.expect(TokenType.KEYWORD).lexeme
+        constraints = []  # 👈 新增
 
-            columns.append({'name': column_name, 'type': column_type})
+        while self.current_token and self.current_token.lexeme != ")":
+            # 👇 新增：解析 FOREIGN KEY 约束
+            if (self.current_token.token_type == TokenType.KEYWORD and
+                    self.current_token.lexeme == "FOREIGN"):
+                self.advance()  # FOREIGN
+                self.expect(TokenType.KEYWORD, "KEY")
+                self.expect(TokenType.DELIMITER, "(")
+                fk_col = self.expect(TokenType.IDENTIFIER).lexeme
+                self.expect(TokenType.DELIMITER, ")")
+                self.expect(TokenType.KEYWORD, "REFERENCES")
+                ref_table = self.expect(TokenType.IDENTIFIER).lexeme
+                self.expect(TokenType.DELIMITER, "(")
+                ref_col = self.expect(TokenType.IDENTIFIER).lexeme
+                self.expect(TokenType.DELIMITER, ")")
+                constraints.append(('FOREIGN_KEY', fk_col, ref_table, ref_col))  # 存储约束
+            else:
+                # 解析普通列
+                col_name = self.expect(TokenType.IDENTIFIER).lexeme
+                col_type = self.expect(TokenType.KEYWORD).lexeme
+                columns.append({'name': col_name, 'type': col_type})
 
-            if self.current_token and self.current_token.lexeme == ',':
+            if self.current_token and self.current_token.lexeme == ",":
                 self.advance()
 
-        self.expect(TokenType.DELIMITER, ')')
-
+        self.expect(TokenType.DELIMITER, ")")
+        # 👇 修改：在AST中包含约束
         return ASTNode('CreateTable', [
             ASTNode('TableName', value=table_name),
-            ASTNode('Columns', [ASTNode('Column', value=col) for col in columns])
+            ASTNode('Columns', [ASTNode('Column', value=col) for col in columns]),
+            ASTNode('Constraints',
+                    [ASTNode('Constraint', value=con) for con in constraints]) if constraints else ASTNode(
+                'NoConstraints')
         ])
 
     def parse_insert(self) -> ASTNode:
@@ -184,6 +201,36 @@ class Parser:
 
         return ASTNode('Delete', [
             ASTNode('TableName', value=table_name),
+            ASTNode('Condition', [condition]) if condition else ASTNode('NoCondition')
+        ])
+
+    def parse_update(self) -> ASTNode:  # 👈 新增方法
+        self.expect(TokenType.KEYWORD, 'UPDATE')
+        table_name = self.expect(TokenType.IDENTIFIER).lexeme
+        self.expect(TokenType.KEYWORD, 'SET')
+        set_clause = []
+        while True:
+            col_name = self.expect(TokenType.IDENTIFIER).lexeme
+            self.expect(TokenType.OPERATOR, '=')
+            if self.current_token.token_type == TokenType.CONSTANT:
+                value_ast = self.parse_constant()
+                set_clause.append(ASTNode('Assignment', [
+                    ASTNode('Column', value=col_name),
+                    value_ast
+                ]))
+            else:
+                self.error(f"Expected constant value, got {self.current_token.lexeme}")
+            if self.current_token and self.current_token.lexeme == ',':
+                self.advance()
+            else:
+                break
+        condition = None
+        if self.current_token and self.current_token.lexeme == 'WHERE':
+            self.advance()
+            condition = self.parse_condition()
+        return ASTNode('Update', [
+            ASTNode('TableName', value=table_name),
+            ASTNode('SetClause', set_clause),
             ASTNode('Condition', [condition]) if condition else ASTNode('NoCondition')
         ])
 

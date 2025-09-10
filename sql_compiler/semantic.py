@@ -31,11 +31,10 @@ class SemanticAnalyzer:
 
     def analyze_create_table(self, ast: ASTNode):
         table_name = self.get_table_name(ast)
-
         # 检查表是否已存在
         if self.catalog.table_exists(table_name):
             self.errors.append(f"Semantic error: Table '{table_name}' already exists")
-            return
+            return  # 👈 关键：如果表存在，直接返回，不执行后续操作
 
         # 解析列定义
         columns_ast = self.find_child(ast, 'Columns')
@@ -51,8 +50,10 @@ class SemanticAnalyzer:
                 'type': column_def['type']
             })
 
-        # 添加到目录
-        self.catalog.create_table(table_name, columns)
+        # 👇 关键修改：移除 self.catalog.create_table 调用
+        # 语义分析阶段只负责检查，不负责创建。
+        # 创建操作将在 Executor.execute_create_table 中执行。
+        pass
 
     def analyze_insert(self, ast: ASTNode):
         table_name = self.get_table_name(ast)

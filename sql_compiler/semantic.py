@@ -56,60 +56,48 @@ class SemanticAnalyzer:
 
     def analyze_insert(self, ast: ASTNode):
         table_name = self.get_table_name(ast)
-
-        # 检查表是否存在
         if not self.catalog.table_exists(table_name):
             self.errors.append(f"Semantic error: Table '{table_name}' does not exist")
             return
 
-        # 获取表结构
         table_info = self.catalog.get_table_info(table_name)
-
-        # 解析列名（如果有）
         column_names_ast = self.find_child(ast, 'ColumnNames')
+        specified_columns = []
         if column_names_ast and column_names_ast.children:
             specified_columns = [child.value for child in column_names_ast.children]
-
-            # 检查指定的列是否存在
-            for col_name in specified_columns:
-                if not any(col['name'] == col_name for col in table_info['columns']):
-                    self.errors.append(f"Semantic error: Column '{col_name}' does not exist in table '{table_name}'")
-
-            # 检查是否有重复列
-            if len(specified_columns) != len(set(specified_columns)):
-                self.errors.append(f"Semantic error: Duplicate column names in INSERT statement")
         else:
-            # 如果没有指定列名，使用所有列
             specified_columns = [col['name'] for col in table_info['columns']]
 
-        # 解析值
         values_ast = self.find_child(ast, 'Values')
         if not values_ast:
             self.errors.append("Semantic error: No values specified in INSERT")
             return
 
-        # 检查值数量是否匹配
         if len(values_ast.children) != len(specified_columns):
             self.errors.append(f"Semantic error: Number of values ({len(values_ast.children)}) "
                                f"does not match number of columns ({len(specified_columns)})")
             return
 
-        # 检查类型一致性
+        # 增强类型检查
         for i, value_ast in enumerate(values_ast.children):
             col_name = specified_columns[i]
-            column_info = next((col for col in table_info['columns'] if col['name'] == col_name), None)
+            col_info = next((col for col in table_info['columns'] if col['name'] == col_name), None)
+            if not col_info:
+                continue
 
-            if column_info and value_ast.node_type in ['IntConstant', 'FloatConstant', 'StringConstant']:
-                expected_type = column_info['type']
-                actual_type = value_ast.node_type.replace('Constant', '').lower()
-
-                # 简单的类型检查
-                if expected_type == 'INT' and actual_type != 'int':
+            expected_type = col_info['type']
+            if value_ast.node_type == 'IntConstant':
+                if expected_type not in ['INT', 'FLOAT']:
                     self.errors.append(f"Semantic error: Type mismatch for column '{col_name}', "
-                                       f"expected INT, got {actual_type.upper()}")
-                elif expected_type == 'FLOAT' and actual_type not in ['int', 'float']:
+                                       f"expected {expected_type}, got INT")
+            elif value_ast.node_type == 'FloatConstant':
+                if expected_type != 'FLOAT':
                     self.errors.append(f"Semantic error: Type mismatch for column '{col_name}', "
-                                       f"expected FLOAT, got {actual_type.upper()}")
+                                       f"expected {expected_type}, got FLOAT")
+            elif value_ast.node_type == 'StringConstant':
+                if expected_type != 'VARCHAR':
+                    self.errors.append(f"Semantic error: Type mismatch for column '{col_name}', "
+                                       f"expected {expected_type}, got VARCHAR")
 
     def analyze_select(self, ast: ASTNode):
         table_name = self.get_table_name(ast)

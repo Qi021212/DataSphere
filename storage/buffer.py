@@ -8,9 +8,10 @@ from utils.constants import BUFFER_POOL_SIZE
 
 
 class BufferPool:
-    def __init__(self, page_manager: PageManager, pool_size: int = BUFFER_POOL_SIZE):
+    def __init__(self, page_manager: PageManager, pool_size: int = BUFFER_POOL_SIZE, policy: str = 'LRU'):
         self.page_manager = page_manager
         self.pool_size = pool_size
+        self.policy = policy
         self.buffer: OrderedDict[int, Page] = OrderedDict()
         self.hit_count = 0
         self.miss_count = 0
@@ -43,10 +44,13 @@ class BufferPool:
         if not self.buffer:
             return
 
-        # 使用LRU策略：移除最久未使用的页面
-        page_id, page = self.buffer.popitem(last=False)
+        if self.policy == 'LRU':
+            page_id, page = self.buffer.popitem(last=False)
+        elif self.policy == 'FIFO':
+            page_id, page = self.buffer.popitem(last=False)
+        else:
+            raise ValueError(f"Unsupported policy: {self.policy}")
 
-        # 如果页面被修改过，写回磁盘
         if page.is_dirty:
             self.page_manager.write_page(page)
 

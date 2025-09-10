@@ -1,6 +1,5 @@
-#数据库引擎 - 存储引擎
-
 # engine/storage_engine.py
+
 from storage.file_manager import FileManager
 
 
@@ -10,25 +9,19 @@ class StorageEngine:
 
     def create_table(self, table_name: str, columns: list):
         """创建表存储结构"""
-        return self.file_manager.create_table_file(table_name)
+        return self.file_manager.create_table_file(table_name, columns)
 
     def insert_record(self, table_name: str, record: dict):
         """插入记录"""
-        # 这里应该有实际的存储逻辑
-        # 简化实现
-        pass
+        return self.file_manager.insert_record(table_name, record)
 
     def read_records(self, table_name: str, condition: dict = None):
         """读取记录"""
-        # 这里应该有实际的读取逻辑
-        # 简化实现
-        return []
+        return self.file_manager.read_records(table_name, condition)
 
     def delete_records(self, table_name: str, condition: dict = None):
         """删除记录"""
-        # 这里应该有实际的删除逻辑
-        # 简化实现
-        return 0
+        return self.file_manager.delete_records(table_name, condition)
 
     def flush(self):
         """刷新所有缓冲数据到磁盘"""

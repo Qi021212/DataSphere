@@ -1,5 +1,3 @@
-#存储系统 - 页式存储
-
 # storage/page.py
 import struct
 import os
@@ -10,7 +8,18 @@ from utils.constants import PAGE_SIZE
 class Page:
     def __init__(self, page_id: int, data: bytes = None):
         self.page_id = page_id
-        self.data = data if data is not None else bytearray(PAGE_SIZE)
+        # 关键修改：确保 self.data 是一个可变的 bytearray
+        if data is None:
+            self.data = bytearray(PAGE_SIZE)
+        else:
+            # 如果传入的是 bytes，将其转换为 bytearray
+            if isinstance(data, bytes):
+                self.data = bytearray(data)
+            elif isinstance(data, bytearray):
+                self.data = data
+            else:
+                raise TypeError("data must be bytes or bytearray")
+
         self.is_dirty = False
         self.pin_count = 0
 
@@ -21,11 +30,25 @@ class Page:
         self.data[offset:offset + len(data)] = data
         self.is_dirty = True
 
-    def get_int(self, offset: int) -> int:
-        return struct.unpack('i', self.data[offset:offset + 4])[0]
+    def get_int(self, offset: int, size: int = 4) -> int:
+        """从指定偏移量读取一个整数，支持不同大小 (1, 2, 4, 8 字节)"""
+        if size not in [1, 2, 4, 8]:
+            raise ValueError(f"Unsupported integer size: {size}. Supported sizes are 1, 2, 4, 8.")
 
-    def set_int(self, offset: int, value: int):
-        self.data[offset:offset + 4] = struct.pack('i', value)
+        # 根据大小选择格式字符
+        fmt = {1: 'b', 2: 'h', 4: 'i', 8: 'q'}[size]  # 'b'=int8, 'h'=int16, 'i'=int32, 'q'=int64
+
+        return struct.unpack(fmt, self.data[offset:offset + size])[0]
+
+    def set_int(self, offset: int, value: int, size: int = 4):
+        """在指定偏移量写入一个整数，支持不同大小 (1, 2, 4, 8 字节)"""
+        if size not in [1, 2, 4, 8]:
+            raise ValueError(f"Unsupported integer size: {size}. Supported sizes are 1, 2, 4, 8.")
+
+        # 根据大小选择格式字符
+        fmt = {1: 'b', 2: 'h', 4: 'i', 8: 'q'}[size]
+
+        self.data[offset:offset + size] = struct.pack(fmt, value)
         self.is_dirty = True
 
     def get_string(self, offset: int, length: int) -> str:

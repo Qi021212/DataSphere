@@ -82,19 +82,12 @@ class Executor:
         column_names = plan.details['column_names']
         values = plan.details['values']
 
-        # 获取表信息
         table_info = self.catalog.get_table_info(table_name)
         if not table_info:
             raise Exception(f"Table '{table_name}' does not exist")
 
-        # 如果没有指定列名，使用所有列
         if not column_names:
             column_names = [col['name'] for col in table_info['columns']]
-
-        # 验证列名
-        for col_name in column_names:
-            if not any(col['name'] == col_name for col in table_info['columns']):
-                raise Exception(f"Column '{col_name}' does not exist in table '{table_name}'")
 
         # 构建记录字典
         record = {}
@@ -103,14 +96,16 @@ class Executor:
             value_type, value = value_info
             record[col_name] = value
 
-        # 调用 FileManager 插入记录 (核心修改)
+        # --- 核心修改：调用FileManager真正插入记录 ---
         success = self.file_manager.insert_record(table_name, record)
         if not success:
             raise Exception("Failed to insert record")
 
-        # 更新目录中的记录数
+        # 更新目录中的记录数 (这一步可以保留，也可以从header_page读取以保持一致性)
         current_count = table_info['row_count']
         self.catalog.update_row_count(table_name, current_count + 1)
+
+        self.file_manager.flush_all()
 
         return f"1 row inserted into '{table_name}'"
 
@@ -119,30 +114,20 @@ class Executor:
         columns = plan.details['columns']
         condition = plan.details['condition']
 
-        # 获取表信息
         table_info = self.catalog.get_table_info(table_name)
         if not table_info:
             raise Exception(f"Table '{table_name}' does not exist")
 
-        # 如果没有指定列，使用所有列
         if not columns or columns == ['*']:
             columns = [col['name'] for col in table_info['columns']]
 
-        # 验证列名
-        for col_name in columns:
-            if not any(col['name'] == col_name for col in table_info['columns']):
-                raise Exception(f"Column '{col_name}' does not exist in table '{table_name}'")
-
-        # 调用 FileManager 读取记录 (核心修改)
+        # --- 核心修改：调用FileManager真正读取记录 ---
         raw_results = self.file_manager.read_records(table_name, condition)
 
         # 只选择指定的列
         selected_results = []
         for row in raw_results:
-            selected_row = {}
-            for col in columns:
-                if col in row:
-                    selected_row[col] = row[col]
+            selected_row = {col: row[col] for col in columns if col in row}
             selected_results.append(selected_row)
 
         return selected_results
@@ -163,6 +148,6 @@ class Executor:
         current_count = table_info['row_count']
         self.catalog.update_row_count(table_name, max(0, current_count - deleted_count))
 
+        self.file_manager.flush_all()
+
         return f"{deleted_count} row(s) deleted from '{table_name}'"
-
-

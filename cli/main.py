@@ -47,15 +47,37 @@ class DatabaseCLI:
                         print(result)
                     elif isinstance(result, list):
                         if result:
+                            # --- 修改开始：增强健壮性和添加调试 ---
+                            # 检查第一行是否为非空字典
+                            first_row = result[0]
+                            if not isinstance(first_row, dict) or len(first_row) == 0:
+                                print("Warning: Result rows are empty or not dictionaries.")
+                                print("Raw result data (for debugging):")
+                                for i, row in enumerate(result):
+                                    print(f"Row {i}: {row} (type: {type(row)})")
+                                print(f"\n{len(result)} row(s) returned")
+                                continue
+
+                            headers = list(first_row.keys())
+                            if not headers:
+                                print("Warning: No columns to display.")
+                                print(f"\n{len(result)} row(s) returned")
+                                continue
+
                             # 打印表头
-                            headers = list(result[0].keys())
-                            print(" | ".join(headers))
-                            print("-" * (len(" | ".join(headers))))
+                            header_str = " | ".join(headers)
+                            print(header_str)
+                            print("-" * len(header_str))
 
                             # 打印数据
                             for row in result:
-                                values = [str(row[col]) for col in headers]
+                                # 确保row是字典
+                                if not isinstance(row, dict):
+                                    print(f"Warning: Row is not a dictionary: {row}")
+                                    continue
+                                values = [str(row.get(col, 'NULL')) for col in headers]  # 使用 .get 避免 KeyError
                                 print(" | ".join(values))
+                            # --- 修改结束 ---
                         print(f"\n{len(result)} row(s) returned")
 
             except Exception as e:

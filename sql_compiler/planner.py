@@ -91,8 +91,11 @@ class Planner:
             for column_ast in columns_ast.children:
                 if column_ast.node_type == 'AllColumns':
                     columns.append('*')
-                else:
+                elif column_ast.node_type == 'ColumnName':
                     columns.append(column_ast.value)
+                elif column_ast.node_type == 'FunctionCall':  # 👈 新增：处理聚合函数
+                    func_plan = self._plan_aggregate_function(column_ast)
+                    columns.append(func_plan)
 
         # 获取条件
         condition = None
@@ -105,6 +108,26 @@ class Planner:
             'columns': columns,
             'condition': condition
         })
+
+    def _plan_aggregate_function(self, func_ast: ASTNode) -> Dict[str, Any]:
+        """为聚合函数生成计划"""
+        func_name_ast = self._find_child(func_ast, 'FunctionName')
+        param_ast = self._find_child(func_ast, 'Parameter')
+
+        func_name = func_name_ast.value
+        param = param_ast.children[0]
+
+        if param.node_type == 'AllColumns':
+            param_value = '*'  # 表示 COUNT(*)
+        else:
+            # 假设参数是一个列引用
+            param_value = self._extract_expression(param)
+
+        return {
+            'type': 'aggregate',
+            'function': func_name,
+            'parameter': param_value
+        }
 
     def plan_delete(self, ast: ASTNode) -> ExecutionPlan:
         table_name = self._get_table_name(ast)

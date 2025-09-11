@@ -82,13 +82,7 @@ class DatabaseCLI:
         # 生成执行计划
         plan = self.planner.generate_plan(ast)
         # 执行
-        result = self.executor.execute(plan)
-
-        # 👇👇👇 新增调试打印 👇👇👇
-        print(f"DEBUG: Executor returned: {result}")  # 打印执行器返回的结果
-        # 👆👆👆 新增调试打印 👆👆👆
-
-        return result
+        return self.executor.execute(plan)
 
     def show_help(self):
         help_text = """

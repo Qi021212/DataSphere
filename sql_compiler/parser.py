@@ -3,7 +3,6 @@
 # sql_compiler/parser.py
 from typing import List, Dict, Any, Optional
 from sql_compiler.lexer import Token, TokenType
-from utils.constants import KEYWORDS
 
 
 class ASTNode:
@@ -168,17 +167,13 @@ class Parser:
                 columns.append(ASTNode('AllColumns'))
                 self.advance()
             else:
-                # 使用 parse_expression 来处理可能带点号的列名
-                column_expr = self.parse_expression()
-                columns.append(ASTNode('ColumnName', value=column_expr.value))
+                columns.append(ASTNode('ColumnName', value=self.expect(TokenType.IDENTIFIER).lexeme))
 
             if self.current_token and self.current_token.lexeme == ',':
                 self.advance()
 
         self.expect(TokenType.KEYWORD, 'FROM')
-
-        # 👇 关键修改：调用 parse_table_source 而不是直接获取表名
-        table_source = self.parse_table_source()  # 新增方法
+        table_name = self.expect(TokenType.IDENTIFIER).lexeme
 
         # 解析WHERE条件（可选）
         condition = None
@@ -188,66 +183,9 @@ class Parser:
 
         return ASTNode('Select', [
             ASTNode('Columns', columns),
-            ASTNode('TableSource', [table_source]),  # 修改为 TableSource
+            ASTNode('TableName', value=table_name),
             ASTNode('Condition', [condition]) if condition else ASTNode('NoCondition')
         ])
-
-    # 👇 新增方法：解析表源 (单表或 JOIN)
-    def parse_table_source(self) -> ASTNode:
-        """解析表源，支持别名和 JOIN"""
-        # 解析基础表名
-        table_name = self.expect(TokenType.IDENTIFIER).lexeme
-
-        # 解析可选的表别名
-        alias = None
-        if (self.current_token and
-                self.current_token.token_type == TokenType.IDENTIFIER and
-                # 简单启发式：如果下一个 token 不是保留关键字或分隔符，则认为是别名
-                self.current_token.lexeme not in KEYWORDS and
-                self.current_token.lexeme not in [',', 'WHERE', 'JOIN', 'INNER', 'LEFT', 'RIGHT', 'ON']):
-            alias = self.current_token.lexeme
-            self.advance()
-
-        # 创建基础表节点
-        table_node = ASTNode('Table', [
-            ASTNode('TableName', value=table_name)
-        ])
-        if alias:
-            table_node.children.append(ASTNode('Alias', value=alias))
-
-        # 检查是否有 JOIN 关键字
-        if (self.current_token and
-                self.current_token.token_type == TokenType.KEYWORD and
-                self.current_token.lexeme in ['INNER', 'LEFT', 'RIGHT', 'JOIN']):
-
-            # 解析连接类型
-            join_type = 'INNER'  # 默认是 INNER JOIN
-            if self.current_token.lexeme in ['INNER', 'LEFT', 'RIGHT']:
-                join_type = self.current_token.lexeme
-                self.advance()
-                # 期望接下来是 'JOIN'
-                self.expect(TokenType.KEYWORD, 'JOIN')
-            else:  # 只有 'JOIN'
-                self.advance()  # 消费 'JOIN'
-
-            # 解析右表
-            right_table = self.parse_table_source()  # 递归调用
-
-            # 期望 'ON'
-            self.expect(TokenType.KEYWORD, 'ON')
-            # 解析连接条件
-            join_condition = self.parse_condition()
-
-            # 返回一个 JOIN 节点
-            return ASTNode('Join', [
-                ASTNode('JoinType', value=join_type),
-                ASTNode('LeftTable', [table_node]),
-                ASTNode('RightTable', [right_table]),
-                ASTNode('JoinCondition', [join_condition])
-            ])
-
-        # 如果没有 JOIN，返回单表节点
-        return table_node
 
     def parse_delete(self) -> ASTNode:
         self.expect(TokenType.KEYWORD, 'DELETE')
@@ -297,9 +235,9 @@ class Parser:
         ])
 
     def parse_condition(self) -> ASTNode:
-        left = self.parse_expression()  # 👈 修改：使用 parse_expression
+        left = self.parse_expression()
         operator = self.expect(TokenType.OPERATOR).lexeme
-        right = self.parse_expression()  # 👈 修改：使用 parse_expression
+        right = self.parse_expression()
 
         return ASTNode('Condition', [
             ASTNode('Left', [left]),
@@ -308,28 +246,12 @@ class Parser:
         ])
 
     def parse_expression(self) -> ASTNode:
-        # 首先解析一个标识符
-        if self.current_token.token_type == TokenType.IDENTIFIER:
-            left_identifier = ASTNode('Identifier', value=self.current_token.lexeme)
-            self.advance()
-
-            # 检查下一个 token 是否是 '.'
-            if self.current_token and self.current_token.lexeme == '.':
-                self.advance()  # consume the '.'
-                if self.current_token.token_type == TokenType.IDENTIFIER:
-                    right_identifier = self.current_token.lexeme
-                    self.advance()
-                    # 返回一个表示 "table.column" 的节点
-                    return ASTNode('ColumnRef', value=f"{left_identifier.value}.{right_identifier}")
-                else:
-                    self.error(f"Expected column name after '.', got {self.current_token.lexeme}")
-            else:
-                # 如果不是 '.'，则返回普通的标识符节点
-                return left_identifier
-
-        # 如果不是标识符开头，则按原有逻辑处理常量
-        elif self.current_token.token_type == TokenType.CONSTANT:
+        if self.current_token.token_type == TokenType.CONSTANT:
             return self.parse_constant()
+        elif self.current_token.token_type == TokenType.IDENTIFIER:
+            identifier = ASTNode('Identifier', value=self.current_token.lexeme)
+            self.advance()
+            return identifier
         else:
             self.error(f"Unexpected token in expression: {self.current_token.lexeme}")
 

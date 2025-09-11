@@ -82,13 +82,7 @@ class Planner:
         })
 
     def plan_select(self, ast: ASTNode) -> ExecutionPlan:
-        # 👇 关键修改：获取 TableSource 而不是 TableName
-        table_source_ast = self._find_child(ast, 'TableSource')
-        if not table_source_ast or not table_source_ast.children:
-            raise Exception("No table source in SELECT")
-
-        # 👇 关键新增：生成表源的执行计划
-        table_source_plan = self._plan_table_source(table_source_ast.children[0])
+        table_name = self._get_table_name(ast)
 
         # 获取选择的列
         columns = []
@@ -107,50 +101,10 @@ class Planner:
             condition = self._extract_condition(condition_ast.children[0])
 
         return ExecutionPlan('Select', {
-            'table_source': table_source_plan,  # 👈 修改为 table_source
+            'table_name': table_name,
             'columns': columns,
             'condition': condition
         })
-
-    # 👇 新增方法：为表源生成执行计划
-    def _plan_table_source(self, ts_ast: ASTNode) -> Dict:
-        """为表源生成执行计划"""
-        if ts_ast.node_type == 'Table':
-            # 处理单表
-            table_name_ast = self._find_child(ts_ast, 'TableName')
-            if not table_name_ast:
-                raise Exception("Table node missing TableName child")
-            table_name = table_name_ast.value
-
-            # 可选：处理别名
-            alias_ast = self._find_child(ts_ast, 'Alias')
-            alias = alias_ast.value if alias_ast else table_name
-
-            return {
-                'type': 'TableScan',
-                'table_name': table_name,
-                'alias': alias  # 传递别名，供后续阶段使用
-            }
-        elif ts_ast.node_type == 'Join':
-            # 处理 JOIN
-            join_type_ast = self._find_child(ts_ast, 'JoinType')
-            left_ast = self._find_child(ts_ast, 'LeftTable')
-            right_ast = self._find_child(ts_ast, 'RightTable')
-            cond_ast = self._find_child(ts_ast, 'JoinCondition')
-
-            if not (
-                    left_ast and left_ast.children and right_ast and right_ast.children and cond_ast and cond_ast.children):
-                raise Exception("Malformed Join AST")
-
-            return {
-                'type': 'Join',
-                'join_type': join_type_ast.value if join_type_ast else 'INNER',
-                'left': self._plan_table_source(left_ast.children[0]),
-                'right': self._plan_table_source(right_ast.children[0]),
-                'condition': self._extract_condition(cond_ast.children[0])
-            }
-        else:
-            raise Exception(f"Unsupported table source type: {ts_ast.node_type}")
 
     def plan_delete(self, ast: ASTNode) -> ExecutionPlan:
         table_name = self._get_table_name(ast)
@@ -223,8 +177,6 @@ class Planner:
 
     def _extract_expression(self, expr_ast: ASTNode) -> Dict[str, Any]:
         if expr_ast.node_type == 'Identifier':
-            return {'type': 'column', 'value': expr_ast.value}
-        elif expr_ast.node_type == 'ColumnRef':  # 👈 新增：处理 ColumnRef 节点
             return {'type': 'column', 'value': expr_ast.value}
         elif expr_ast.node_type == 'IntConstant':
             return {'type': 'constant', 'value_type': 'int', 'value': expr_ast.value}

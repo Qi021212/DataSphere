@@ -224,13 +224,33 @@ class FileManager:
                 record_count = page.get_int(0)
                 next_page_id = page.get_int(4)
 
-                # 计算当前页剩余空间 (简化：线性分配)
-                used_space = 8 + (record_count * actual_record_size)
-                if used_space + actual_record_size <= 4096:  # PAGE_SIZE
-                    free_space_offset = used_space
+                # 👇 关键修复：精确计算当前页的写入偏移量
+                current_offset = 8  # 跳过页头 (记录数4字节 + 下一页ID4字节)
+                valid_record_count = 0  # 用于计数成功反序列化的记录
+
+                for _ in range(record_count):
+                    try:
+                        _, next_offset = self._deserialize_record(page.data, columns, current_offset)
+                        current_offset = next_offset
+                        valid_record_count += 1
+                    except Exception as e:
+                        print(
+                            f"Warning: Skipping corrupted record in page {current_page_id} at offset {current_offset}: {e}")
+                        # 如果反序列化失败，我们跳过这条记录，但为了安全，我们中断当前页的插入，转而寻找新页。
+                        # 这是一种保守策略，避免在损坏的页上继续写入。
+                        break
+
+                # 检查剩余空间是否足够
+                if current_offset + actual_record_size <= 4096:  # PAGE_SIZE
+                    free_space_offset = current_offset
                     target_page = page
                     target_page_id = current_page_id
+                    # 更新页内记录数为有效记录数
+                    page.set_int(0, valid_record_count)
                     break
+                else:
+                    # 空间不足，继续查找下一页
+                    pass
 
                 current_page_id = next_page_id
 
@@ -292,9 +312,14 @@ class FileManager:
             # 从 offset 8 开始读取记录
             data_offset = 8
             for _ in range(record_count):
-                # 反序列化单条记录
                 try:
                     record, new_offset = self._deserialize_record(page.data, columns, data_offset)
+
+                    # 👇👇👇 新增调试打印 👇👇👇
+                    print(f"DEBUG: Deserialized Record: {record}")  # 打印反序列化出的记录
+                    print(f"DEBUG: New Offset: {new_offset}")  # 打印计算出的新偏移量
+                    # 👆👆👆 新增调试打印 👆👆👆
+
                     # 应用条件过滤
                     if condition is None or self._evaluate_condition_in_fm(record, condition):
                         results.append(record)
@@ -304,6 +329,10 @@ class FileManager:
                     break
 
             current_page_id = next_page_id
+
+        # 👇👇👇 新增调试打印 👇👇👇
+        print(f"DEBUG: Final Results List: {results}")  # 打印最终返回的结果列表
+        # 👆👆👆 新增调试打印 👆👆👆
 
         return results
 

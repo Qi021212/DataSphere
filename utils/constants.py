@@ -20,7 +20,8 @@ class DataType(enum.Enum):
 KEYWORDS = {
     'SELECT', 'FROM', 'WHERE', 'CREATE', 'TABLE', 'INSERT', 'INTO',
     'VALUES', 'DELETE', 'UPDATE', 'SET', 'DROP', 'AND', 'OR', 'NOT',
-    'INT', 'VARCHAR', 'FLOAT', 'BOOL','KEY','FOREIGN','KEY','REFERENCES'
+    'INT', 'VARCHAR', 'FLOAT', 'BOOL','KEY','FOREIGN','KEY','REFERENCES',
+    'JOIN', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'ON'
 }
 
 # 运算符

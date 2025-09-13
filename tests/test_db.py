@@ -4,7 +4,7 @@ import os
 import shutil
 from sql_compiler.lexer import Lexer
 from sql_compiler.parser import Parser
-from sql_compiler.semantic import SemanticAnalyzer
+from sql_compiler.semantic_analyzer import SemanticAnalyzer
 from sql_compiler.planner import Planner
 from sql_compiler.catalog import Catalog
 from storage.file_manager import FileManager

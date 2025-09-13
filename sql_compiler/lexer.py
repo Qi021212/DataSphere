@@ -1,178 +1,146 @@
-#SQL编译器 - 词法分析器
-
 # sql_compiler/lexer.py
 import re
-from typing import List, Tuple, Optional
-from utils.constants import TokenType, KEYWORDS, OPERATORS, DELIMITERS
+
+# === 种别码映射（与现有流水线保持一致） ===
+TOKEN_TYPE_MAP = {
+    'KEYWORD': 1,
+    'IDENTIFIER': 2,
+    'NUMBER': 3,
+    'STRING': 3,   # 字符串与数字同用 3
+    'OPERATOR': 4,
+    'DELIMITER': 5,
+    'END': 0
+}
 
 
 class Token:
-    def __init__(self, token_type: TokenType, lexeme: str, line: int, column: int):
-        self.token_type = token_type
-        self.lexeme = lexeme
-        self.line = line
-        self.column = column
+    def __init__(self, type_, value, line, column):
+        self.type = type_               # 词法类别字符串，如 'KEYWORD'
+        self.value = value              # 词素内容
+        self.line = line                # 行号（从1开始）
+        self.column = column            # 列号（从1开始）
+        self.type_code = TOKEN_TYPE_MAP.get(type_, 0)
 
     def __repr__(self):
-        return f"[{self.token_type.name}, '{self.lexeme}', {self.line}, {self.column}]"
+        # 方便调试：与示例输出风格保持一致 [type_code, "value", line, column]
+        v = self.value
+        if isinstance(v, str):
+            return f'[{self.type_code}, "{v}", {self.line}, {self.column}]'
+        return f'[{self.type_code}, "{v}", {self.line}, {self.column}]'
 
 
 class Lexer:
-    def __init__(self):
+    """
+    简单 SQL 词法分析器：
+      - 关键字大小写不敏感，统一转为大写后输出
+      - 标识符大小写保留原样（可按需改为统一）
+      - 字符串仅支持单引号包裹，内部不处理转义（可按需扩展）
+      - 数字仅支持十进制整数
+    """
+    # 关键字集合（统一大写）
+    KEYWORDS = {
+        # DDL / DML / 查询
+        'SELECT', 'FROM', 'WHERE', 'CREATE', 'TABLE', 'INSERT', 'INTO',
+        'VALUES', 'DELETE', 'UPDATE', 'SET', 'JOIN', 'ON',
+        'ORDER', 'BY', 'GROUP', 'HAVING', 'AS',
+
+        # 本题要求新增：
+        'AND', 'OR', 'NOT', 'ASC', 'DESC',
+
+        # 简单类型
+        'INT', 'VARCHAR'
+    }
+
+    # 运算符集合（用于必要时精确匹配；正则仍以字符类为主）
+    # 可扩展：<= >= <> != = > <
+    OPERATORS = {
+        '=', '>', '<', '>=', '<=', '<>', '!='
+    }
+
+    # 分隔符集合（用于参考/注释；真正匹配以正则为准）
+    DELIMITERS = {
+        '(', ')', ',', ';', '.', '*', '='  # 注意：'=' 既在 OPERATOR 中也在这里，但 OPERATOR 优先匹配
+    }
+
+    def __init__(self, text: str):
+        self.text = text
         self.tokens = []
-        self.line = 1
-        self.column = 1
-        self.current_pos = 0
-        self.input = ""
+        self.errors = []
+        self._tokenize()
 
-    def tokenize(self, input_text: str) -> List[Token]:
-        self.input = input_text
-        self.tokens = []
-        self.line = 1
-        self.column = 1
-        self.current_pos = 0
+    def _tokenize(self):
+        """
+        使用正则分组匹配整篇文本。为保证关键字优先于标识符，
+        先匹配 IDENTIFIER，再在 Python 侧判断是否为关键字。
+        """
+        token_spec = [
+            # 空白
+            ('WHITESPACE', r'\s+'),
 
-        while self.current_pos < len(self.input):
-            char = self.input[self.current_pos]
+            # 标识符（后续再判断是否是关键字）
+            ('IDENTIFIER', r'[A-Za-z_][A-Za-z0-9_]*'),
 
-            # 跳过空白字符
-            if char.isspace():
-                if char == '\n':
-                    self.line += 1
-                    self.column = 1
+            # 数字（整数）
+            ('NUMBER', r'\d+'),
+
+            # 字符串（单引号，不处理转义）
+            ('STRING', r"'[^']*'"),
+
+            # 运算符（多字符优先）
+            ('OPERATOR', r'<>|!=|>=|<=|=|>|<'),
+
+            # 分隔符：加入 '*' 以支持 SELECT * FROM ...
+            ('DELIMITER', r'[(),;.*]'),
+        ]
+
+        tok_regex = '|'.join(
+            f'(?P<{name}>{pattern})' for name, pattern in token_spec
+        )
+
+        # 用 finditer 逐个匹配，大小写不敏感
+        for mo in re.finditer(tok_regex, self.text, flags=re.IGNORECASE | re.MULTILINE):
+            kind = mo.lastgroup
+            lexeme = mo.group()
+            start = mo.start()
+
+            # 计算行/列（1-based）
+            before = self.text[:start]
+            line = before.count('\n') + 1
+            last_newline = before.rfind('\n')
+            column = (start - (last_newline + 1)) + 1
+
+            if kind == 'WHITESPACE':
+                continue
+
+            if kind == 'IDENTIFIER':
+                up = lexeme.upper()
+                if up in self.KEYWORDS:
+                    token = Token('KEYWORD', up, line, column)
                 else:
-                    self.column += 1
-                self.current_pos += 1
+                    token = Token('IDENTIFIER', lexeme, line, column)
+
+            elif kind == 'NUMBER':
+                token = Token('NUMBER', int(lexeme), line, column)
+
+            elif kind == 'STRING':
+                token = Token('STRING', lexeme[1:-1], line, column)
+
+            elif kind == 'OPERATOR':
+                token = Token('OPERATOR', lexeme, line, column)
+
+            elif kind == 'DELIMITER':
+                token = Token('DELIMITER', lexeme, line, column)
+
+            else:
+                # 理论不会到这里
+                self.errors.append((line, column, f"Unrecognized token: {lexeme}"))
                 continue
 
-            # 处理注释
-            if char == '-' and self.current_pos + 1 < len(self.input) and self.input[self.current_pos + 1] == '-':
-                self.skip_comment()
-                continue
+            self.tokens.append(token)
 
-            # 处理字符串常量
-            if char == "'":
-                token = self.process_string()
-                if token:
-                    self.tokens.append(token)
-                continue
-
-            # 处理数字常量
-            if char.isdigit():
-                token = self.process_number()
-                if token:
-                    self.tokens.append(token)
-                continue
-
-            # 处理标识符和关键字
-            if char.isalpha() or char == '_':
-                token = self.process_identifier()
-                if token:
-                    self.tokens.append(token)
-                continue
-
-            # 处理运算符
-            if char in OPERATORS:
-                token = self.process_operator()
-                if token:
-                    self.tokens.append(token)
-                continue
-
-            # 处理分隔符
-            if char in DELIMITERS:
-                self.tokens.append(Token(TokenType.DELIMITER, char, self.line, self.column))
-                self.column += 1
-                self.current_pos += 1
-                continue
-
-            # 未知字符
-            raise Exception(f"Lexical error: Unknown character '{char}' at line {self.line}, column {self.column}")
-
+    def get_tokens(self):
+        """返回 Token 列表。"""
         return self.tokens
 
-    def skip_comment(self):
-        while (self.current_pos < len(self.input) and
-               self.input[self.current_pos] != '\n'):
-            self.current_pos += 1
-            self.column += 1
-
-    def process_string(self) -> Optional[Token]:
-        start_pos = self.current_pos
-        start_line = self.line
-        start_column = self.column
-
-        self.current_pos += 1  # 跳过开始的引号
-        self.column += 1
-
-        string_content = []
-        while (self.current_pos < len(self.input) and
-               self.input[self.current_pos] != "'"):
-            if self.input[self.current_pos] == '\n':
-                self.line += 1
-                self.column = 1
-            else:
-                self.column += 1
-            string_content.append(self.input[self.current_pos])
-            self.current_pos += 1
-
-        if self.current_pos >= len(self.input):
-            raise Exception(f"Lexical error: Unclosed string at line {start_line}, column {start_column}")
-
-        # 跳过结束的引号
-        self.current_pos += 1
-        self.column += 1
-
-        lexeme = "'" + ''.join(string_content) + "'"
-        return Token(TokenType.CONSTANT, lexeme, start_line, start_column)
-
-    def process_number(self) -> Optional[Token]:
-        start_pos = self.current_pos
-        start_line = self.line
-        start_column = self.column
-
-        number_content = []
-        while (self.current_pos < len(self.input) and
-               (self.input[self.current_pos].isdigit() or self.input[self.current_pos] == '.')):
-            number_content.append(self.input[self.current_pos])
-            self.current_pos += 1
-            self.column += 1
-
-        lexeme = ''.join(number_content)
-        return Token(TokenType.CONSTANT, lexeme, start_line, start_column)
-
-    def process_identifier(self) -> Optional[Token]:
-        start_pos = self.current_pos
-        start_line = self.line
-        start_column = self.column
-
-        identifier_content = []
-        while (self.current_pos < len(self.input) and
-               (self.input[self.current_pos].isalnum() or self.input[self.current_pos] == '_')):
-            identifier_content.append(self.input[self.current_pos])
-            self.current_pos += 1
-            self.column += 1
-
-        lexeme = ''.join(identifier_content)
-        if lexeme.upper() in KEYWORDS:
-            return Token(TokenType.KEYWORD, lexeme.upper(), start_line, start_column)
-        else:
-            return Token(TokenType.IDENTIFIER, lexeme, start_line, start_column)
-
-    def process_operator(self) -> Optional[Token]:
-        start_pos = self.current_pos
-        start_line = self.line
-        start_column = self.column
-
-        operator_content = [self.input[self.current_pos]]
-        self.current_pos += 1
-        self.column += 1
-
-        # 处理多字符运算符
-        if (self.current_pos < len(self.input) and
-                operator_content[0] + self.input[self.current_pos] in OPERATORS):
-            operator_content.append(self.input[self.current_pos])
-            self.current_pos += 1
-            self.column += 1
-
-        lexeme = ''.join(operator_content)
-        return Token(TokenType.OPERATOR, lexeme, start_line, start_column)
+    def get_errors(self):
+        return self.errors

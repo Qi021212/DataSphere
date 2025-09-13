@@ -153,6 +153,7 @@ class Lexer:
             self.column += 1
 
         lexeme = ''.join(identifier_content)
+        # 👇 关键修复：将 lexeme 转换为大写后再与 KEYWORDS 集合比较
         if lexeme.upper() in KEYWORDS:
             return Token(TokenType.KEYWORD, lexeme.upper(), start_line, start_column)
         else:

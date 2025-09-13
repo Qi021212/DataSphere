@@ -22,7 +22,6 @@ class Catalog:
                     loaded_data = json.load(f)
                     # 👇 只有文件存在且加载成功，才用加载的数据覆盖内存中的字典
                     self.tables = loaded_data
-                    print(f"DEBUG: 从 {self.catalog_file} 成功加载目录")
             except json.JSONDecodeError:
                 print(f"DEBUG: {self.catalog_file} 文件损坏，将创建新的空目录")
                 # 文件损坏，我们保留空的 self.tables，并在下次 _save_catalog 时覆盖它

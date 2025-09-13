@@ -82,7 +82,22 @@ class DatabaseCLI:
         # 生成执行计划
         plan = self.planner.generate_plan(ast)
         # 执行
-        return self.executor.execute(plan)
+        result = self.executor.execute(plan)
+
+        # 👇👇👇 修复：确保将格式化后的结果返回 👇👇👇
+        if result is not None:
+            if isinstance(result, str):
+                return result  # 直接返回字符串（如错误信息）
+            elif isinstance(result, list):
+                if result:
+                    formatted_output = format_output(result)
+                    return formatted_output  # 👈 关键：返回格式化后的字符串
+                else:
+                    return "No results returned."
+        # 👆👆👆 修复结束 👆👆👆
+
+        # 如果 result 为 None，则返回 None
+        return result
 
     def show_help(self):
         help_text = """

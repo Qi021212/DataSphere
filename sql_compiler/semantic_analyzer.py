@@ -1,17 +1,34 @@
 # sql_compiler/semantic_analyzer.py
-# SQL 语义分析器：检查 AST 的语义正确性（表存在、列存在、类型匹配等）
+# SQL 语义分析器：检查 AST 的语义正确性（表存在、列存在、类型匹配等）+ 智能提示
 from typing import List, Tuple, Optional, Dict
 from sql_compiler.catalog import Catalog  # ✅ 复用统一的目录类（持久化）
+import re
 
 class SemanticError(Exception):
     """语义错误异常"""
     pass
 
 # ---------------- 内部工具：安全解析条件字符串 ----------------
-_COMPARISON_OPS = ["<>", ">=", "<=", "=", ">", "<"]  # 注意顺序：长的在前，避免 >= 被先匹配成 >
+_COMPARISON_OPS = ["<>", ">=", "<=", "=", "!=", ">", "<"]  # 注意顺序：长的在前
 _LOGICAL_AND = "AND"
 _LOGICAL_OR  = "OR"
 _LOGICAL_NOT = "NOT"
+
+# 识别聚合：COUNT/SUM/AVG（COUNT(*) 支持）
+_AGG_RE = re.compile(r"^\s*(COUNT|SUM|AVG)\s*\(\s*(\*|[A-Za-z_][\w\.]*)\s*\)\s*$", re.I)
+
+def _is_aggregate_expr(expr: str) -> bool:
+    return bool(_AGG_RE.match(expr or ""))
+
+def _parse_aggregate(expr: str) -> Tuple[str, str]:
+    """
+    返回 (FUNC, ARG)；如 ('COUNT', '*') / ('SUM', 'age') / ('AVG', 't.col')
+    调用方保证 expr 已匹配聚合。
+    """
+    m = _AGG_RE.match(expr or "")
+    func = m.group(1).upper()
+    arg = m.group(2)
+    return func, arg
 
 def _strip_outer_parens(s: str) -> str:
     s = s.strip()
@@ -148,6 +165,9 @@ class SemanticAnalyzer:
 
     def analyze(self, ast_node):
         node_type = type(ast_node).__name__
+        if node_type == "ExplainNode":
+            # 只分析内部语句；不产生副作用
+            return self.analyze(ast_node.inner)
         if node_type == "CreateTableNode":
             return self._analyze_create_table(ast_node)
         elif node_type == "InsertNode":
@@ -193,7 +213,36 @@ class SemanticAnalyzer:
 
         for row in node.values:
             if len(row) != len(ins_types):
-                raise Exception(f"[语义错误] 插入值数量与列数不符")
+                # 智能提示：告诉用户期望的列清单与可执行示例
+                target_cols = node.column_names if node.column_names else table_names
+                expected = len(target_cols)
+                got = len(row)
+
+                # 构造示例：缺少的部分用占位符 <value>
+                fixed_vals = []
+                for i in range(len(target_cols)):
+                    if i < len(row):
+                        v = row[i]
+                    else:
+                        v = "<value>"
+                    # 字符串类型加引号
+                    typ = ins_types[i]
+                    if isinstance(v, str):
+                        # 已经是 'xxx' 就不再包
+                        if not (v.startswith("'") and v.endswith("'")) and typ in ("VARCHAR",):
+                            v = f"'{v}'"
+                    elif v == "<value>":
+                        pass
+                    fixed_vals.append(str(v))
+
+                hint = (
+                    "智能提示：INSERT 提供的值数量与列数不一致。\n"
+                    f"  期望列({expected}): ({', '.join(target_cols)})\n"
+                    f"  实际提供({got}): ({', '.join(map(str, row))})\n"
+                    "  示例修复（补齐缺失的值或删去多余列）：\n"
+                    f"    INSERT INTO {node.table_name}({', '.join(target_cols)}) VALUES ({', '.join(fixed_vals)});"
+                )
+                raise Exception(hint)
         return f"[语义正确] 插入 {len(node.values)} 行到 {node.table_name}"
 
     # ---------- 辅助 ----------
@@ -201,7 +250,10 @@ class SemanticAnalyzer:
         cols = [c['name'] for c in self.catalog.get_table_info(table_name)['columns']]
         return col_name in cols
 
-    def _check_qualified_or_unqualified_col(self, alias_map, token: str):
+    def _resolve_column(self, alias_map: Dict[str, str], token: str) -> Tuple[str, str]:
+        """
+        解析列引用为 (表名, 列名)。会处理歧义与不存在。
+        """
         token = _normalize_ident(token)
         if "." in token:
             a, c = token.split(".", 1)
@@ -210,6 +262,7 @@ class SemanticAnalyzer:
             tbl = alias_map[a]
             if not self._col_exists_in_table(tbl, c):
                 raise Exception(f"[语义错误] 列 '{c}' 不存在于表 {tbl}")
+            return tbl, c
         else:
             hits = []
             for t in set(alias_map.values()):
@@ -219,6 +272,11 @@ class SemanticAnalyzer:
                 raise Exception(f"[语义错误] 列 '{token}' 不存在于任何表")
             if len(hits) > 1:
                 raise Exception(f"[语义错误] 列 '{token}' 在多个表中存在，需限定表名或别名（歧义）")
+            return hits[0], token
+
+    def _check_qualified_or_unqualified_col(self, alias_map, token: str):
+        # 仅做存在性/歧义检查
+        self._resolve_column(alias_map, token)
 
     def _check_condition_string(self, alias_map, cond_str: str):
         if not cond_str or not cond_str.strip():
@@ -254,6 +312,7 @@ class SemanticAnalyzer:
 
     # ---------- SELECT ----------
     def _analyze_select(self, node):
+        # 1) 构建别名映射与表存在性检查
         alias_map: Dict[str, str] = {}
         if getattr(node, "from_alias", None):
             alias_map[_normalize_ident(node.from_alias.strip().strip("()"))] = node.from_table
@@ -268,14 +327,67 @@ class SemanticAnalyzer:
             if not self.catalog.table_exists(tbl):
                 raise Exception(f"[语义错误] 表 '{tbl}' 不存在")
 
-        for col, _alias in getattr(node, "select_items", []):
-            if col == "*": continue
-            self._check_qualified_or_unqualified_col(alias_map, col)
+        # 2) 拆分选择项：普通列 vs 聚合
+        plain_cols: List[str] = []
+        aggregates: List[Tuple[str, str]] = []  # (FUNC, ARG)
 
+        for col, _alias in getattr(node, "select_items", []):
+            if col == "*":
+                plain_cols.append(col)
+                continue
+            if _is_aggregate_expr(col):
+                func, arg = _parse_aggregate(col)
+                if not (func == "COUNT" and arg == "*"):
+                    # COUNT(col)/SUM(col)/AVG(col) 需要检查列存在
+                    self._check_qualified_or_unqualified_col(alias_map, arg)
+                    # 数值性检查（仅 SUM/AVG）
+                    if func in ("SUM", "AVG"):
+                        tbl, c = self._resolve_column(alias_map, arg)
+                        cols = {x['name']: x['type'] for x in self.catalog.get_table_info(tbl)['columns']}
+                        typ = cols[c]
+                        if typ not in ("INT", "FLOAT"):
+                            raise Exception(f"[语义错误] {func} 仅支持数值列，列 '{arg}' 的类型为 {typ}")
+                aggregates.append((func, arg))
+            else:
+                # 普通列：校验存在性/歧义
+                self._check_qualified_or_unqualified_col(alias_map, col)
+                plain_cols.append(col)
+
+        # 3) 分组规则
+        gb = getattr(node, "group_by", None)
+        if aggregates:
+            if gb:
+                # 仅支持单列分组：该列必须存在；所有普通列都必须等于该列（或等价引用）
+                self._check_qualified_or_unqualified_col(alias_map, gb)
+                gb_norm = _normalize_ident(gb)
+                for c in plain_cols:
+                    if c == "*":
+                        raise Exception("[语义错误] 聚合查询中不支持 SELECT *（请改为明确列或仅使用聚合函数）")
+                    if _normalize_ident(c) != gb_norm:
+                        raise Exception(f"[语义错误] 非分组列 '{c}' 必须出现在 GROUP BY 中（当前仅支持单列分组 '{gb}'）")
+            else:
+                # 无分组时，不能混用普通列
+                non_star_plain = [c for c in plain_cols if c != "*"]
+                if non_star_plain:
+                    raise Exception("[语义错误] 存在聚合函数但缺少 GROUP BY；非分组列必须出现在 GROUP BY 中")
+                # 同时禁止 '*' 与聚合混用（否则语义不清）
+                if "*" in plain_cols:
+                    raise Exception("[语义错误] 聚合查询中不支持 SELECT *（请改为明确列或仅使用聚合函数）")
+        else:
+            # 没有聚合：允许 SELECT * 或普通列
+            pass
+
+        # 4) 连接与 WHERE 条件检查
         for _, _, cond in getattr(node, "joins", []):
             self._check_condition_string(alias_map, cond)
         if getattr(node, "where_condition", None):
             self._check_condition_string(alias_map, node.where_condition)
+
+        # 5) ORDER BY（如有）：目前仅保证列存在
+        if getattr(node, "order_by", None):
+            ob = node.order_by
+            if ob != "*":
+                self._check_qualified_or_unqualified_col(alias_map, ob)
 
         return f"[语义正确] 查询表 {node.from_table}"
 

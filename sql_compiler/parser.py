@@ -12,15 +12,26 @@ class ASTNode:
     pass
 
 
+class ExplainNode(ASTNode):
+    def __init__(self, inner: ASTNode):
+        self.inner = inner
+    def __repr__(self):
+        return f"ExplainNode({self.inner})"
+
+
 class CreateTableNode(ASTNode):
-    def __init__(self, table_name: str, columns: List[Tuple[str, str]], pos: Optional[int] = None):
+    def __init__(self, table_name: str, columns: List[Tuple[str, str]],
+                 constraints: Optional[List[Tuple[str, str, str, str]]] = None,
+                 pos: Optional[int] = None):
         self.table_name = table_name
         self.columns = columns
+        self.constraints = constraints or []  # e.g. ('FOREIGN_KEY', 'dept_id', 'departments', 'dept_id')
         self.pos = pos
 
     def __repr__(self):
         cols = ", ".join(f"{n} {t}" for n, t in self.columns)
-        return f"CreateTableNode({self.table_name}, [{cols}])"
+        cons = "; ".join([f"{c[0]}({c[1]}) REF {c[2]}({c[3]})" for c in self.constraints]) if self.constraints else ""
+        return f"CreateTableNode({self.table_name}, [{cols}]{'; ' + cons if cons else ''})"
 
 
 class InsertNode(ASTNode):
@@ -39,7 +50,7 @@ class InsertNode(ASTNode):
 class SelectNode(ASTNode):
     def __init__(self, select_items: List[Tuple[str, Optional[str]]], from_table: str,
                  from_alias: Optional[str] = None, pos: Optional[int] = None):
-        self.select_items = select_items
+        self.select_items = select_items  # [(expr_sql, alias_or_None)]
         self.from_table = from_table
         self.from_alias = from_alias
         # (right_table, alias, condition_sql)
@@ -51,7 +62,7 @@ class SelectNode(ASTNode):
         self.pos = pos
 
     def __repr__(self):
-        items = ", ".join(c for c, _ in self.select_items)
+        items = ", ".join((f"{e} AS {a}" if a else e) for e, a in self.select_items)
         j = ""
         if self.joins:
             j = " " + " ".join([f"JOIN {t}{(' ' + a) if a else ''} ON {cond}" for t, a, cond in self.joins])
@@ -101,7 +112,10 @@ def token_to_symbol(tok: Optional[Token]) -> str:
         kw = tval.upper()
         if kw in ("AND", "OR", "NOT", "ASC", "DESC", "SELECT", "FROM", "JOIN", "ON",
                   "WHERE", "GROUP", "BY", "ORDER", "INSERT", "INTO", "VALUES",
-                  "CREATE", "TABLE", "DELETE", "UPDATE", "SET", "INT", "VARCHAR"):
+                  "CREATE", "TABLE", "DELETE", "UPDATE", "SET",
+                  "INT", "VARCHAR", "FLOAT", "BOOL",
+                  "FOREIGN", "KEY", "REFERENCES",
+                  "COUNT", "SUM", "AVG", "EXPLAIN"):
             return kw
         return kw
     if ttype == "IDENTIFIER":
@@ -113,7 +127,6 @@ def token_to_symbol(tok: Optional[Token]) -> str:
     if ttype == "OPERATOR":
         return "OPERATOR"
     if ttype == "DELIMITER":
-        # 常见字面量
         if tval in ("(", ")", ",", ";", ".", "*"):
             return tval
         if tval in ("=",):
@@ -125,7 +138,7 @@ def token_to_symbol(tok: Optional[Token]) -> str:
 
 
 # ---------------- FIRST / FOLLOW / 预测表 与 LL(1) 仿真 ----------------
-def compute_first_sets(grammar: Dict[str, List[List[str]]], terminals: Set[str]) -> Dict[str, Set[str]]:
+def compute_first_sets(grammar: Dict[str, List[List[str]]], terminals: Set[str]) -> Dict[str, Set[str]]:  # noqa
     FIRST: Dict[str, Set[str]] = {nt: set() for nt in grammar}
     changed = True
     while changed:
@@ -159,7 +172,7 @@ def compute_first_sets(grammar: Dict[str, List[List[str]]], terminals: Set[str])
     return FIRST
 
 
-def compute_follow_sets(grammar: Dict[str, List[List[str]]], start_symbol: str, terminals: Set[str],
+def compute_follow_sets(grammar: Dict[str, List[List[str]]], start_symbol: str, terminals: Set[str],  # noqa
                         FIRST: Dict[str, Set[str]]) -> Dict[str, Set[str]]:
     FOLLOW: Dict[str, Set[str]] = {nt: set() for nt in grammar}
     FOLLOW[start_symbol].add("#")
@@ -198,7 +211,7 @@ def compute_follow_sets(grammar: Dict[str, List[List[str]]], start_symbol: str, 
     return FOLLOW
 
 
-def build_parse_table(grammar: Dict[str, List[List[str]]], terminals: Set[str],
+def build_parse_table(grammar: Dict[str, List[List[str]]], terminals: Set[str],  # noqa
                       FIRST: Dict[str, Set[str]], FOLLOW: Dict[str, Set[str]]):
     table: Dict[Tuple[str, str], List[str]] = {}
     for A, prods in grammar.items():
@@ -230,15 +243,11 @@ def build_parse_table(grammar: Dict[str, List[List[str]]], terminals: Set[str],
     return table
 
 
-def ll1_simulate(tokens: List[Token],
+def ll1_simulate(tokens: List[Token],  # noqa
                  grammar: Dict[str, List[List[str]]],
                  start_symbol: str,
                  terminals: Set[str],
                  on_expected: Optional[Callable[[List[str]], None]] = None):
-    """
-    打印 LL(1) 预测分析推导过程（不消费实际 tokens）
-    on_expected: 可选回调，把当前非终结符可接受的 FIRST/FOLLOW（即“可能输入集”）传回给外部用于智能诊断。
-    """
     FIRST = compute_first_sets(grammar, terminals)
     FOLLOW = compute_follow_sets(grammar, start_symbol, terminals, FIRST)
     table = build_parse_table(grammar, terminals, FIRST, FOLLOW)
@@ -289,7 +298,6 @@ def ll1_simulate(tokens: List[Token],
                 else:
                     print(f"❌ 出错: 无法从 {top} 推导输入 EOF")
                 return False
-            # 成功使用产生式时，也把当前 non-terminal 的可选 FIRST/FOLLOW 抛给诊断侧
             if on_expected:
                 expected_now = sorted({a for (A, a) in table.keys() if A == top})
                 on_expected(list(expected_now))
@@ -325,61 +333,32 @@ class Parser:
             return f"[语法错误] 期望 {expected}, 实际 EOF"
 
     def _smart_hints(self, expected_list: List[str], got_tok: Optional[Token]) -> str:
-        """
-        基于“上一个/上上个 token”的上下文来更精准地给出智能提示。
-        只在命中明确场景时返回单一提示，避免互相干扰。
-        """
         if not got_tok:
             return ""
-
-        # 当前读到的（出错）符号
         got_upper = str(got_tok.value).upper() if isinstance(got_tok.value, str) else str(got_tok.value)
         exp = set(e.upper() for e in (expected_list or []))
-
-        # 上下文：上一个 / 上上个 token
         prev_tok = self.tokens[self.pos - 1] if self.pos - 1 >= 0 else None
         prev2_tok = self.tokens[self.pos - 2] if self.pos - 2 >= 0 else None
         prev_upper = str(prev_tok.value).upper() if (prev_tok and isinstance(prev_tok.value, str)) else None
         prev2_upper = str(prev2_tok.value).upper() if (prev2_tok and isinstance(prev2_tok.value, str)) else None
 
-        # ---- 规则 1：JOIN 之后缺 ON（或直接遇到 WHERE/GROUP/ORDER/;）----
-        # 触发条件：预测集中包含 ON，且 got 是 WHERE/GROUP/ORDER/JOIN/;/# 之一
-        # 示例：SELECT * FROM a JOIN b WHERE ...  -> 缺 ON
         if "ON" in exp and got_upper in {"WHERE", "GROUP", "ORDER", "JOIN"} or ("ON" in exp and got_upper in {";", "#"}):
-
             return "智能提示：在 JOIN 之后应有 ON ... 条件，是否缺少连接条件？"
 
-        # ---- 规则 2：ON / WHERE 后缺布尔条件 ----
-        # 触发条件：预计应该出现标识符/括号/NOT 等构成条件的起始符，
-        # 但实际读到了 JOIN/WHERE/GROUP/ORDER/;/# 等
-        # 且“上一个 token”为 ON / WHERE（最强信号）
         if prev_upper in {"ON", "WHERE"}:
             if any(k in exp for k in {"IDENTIFIER", "(", "NOT"}) and got_upper in {"JOIN", "WHERE", "GROUP", "ORDER", ";", "#"}:
                 return "智能提示：需要一个布尔条件，例如 a.id = b.sid 或 age > 18"
 
-        # ---- 规则 3：ORDER BY / GROUP BY 后缺列名 ----
-        # 强上下文：上一个 token 是 BY，且上上个 token 是 ORDER 或 GROUP
-        # got 为 ';' 或 '#'（EOF）或关键字（WHERE/JOIN/GROUP/ORDER）
         if prev_upper == "BY" and prev2_upper in {"ORDER", "GROUP"}:
             if got_upper in {";", "#", "WHERE", "JOIN", "GROUP", "ORDER"} or "IDENTIFIER" in exp:
                 return "智能提示：ORDER BY / GROUP BY 后应跟列名，例如 ORDER BY col 或 GROUP BY col"
 
-        # ---- 规则 4：SELECT 列表缺少列（直接读到 FROM）----
-        # 宽松触发：当预测集中需要 IDENTIFIER，而实际读到了 FROM
         if "IDENTIFIER" in exp and got_upper == "FROM":
             return "智能提示：是否缺少选择列表？你可以写具体列名或使用 * ，例如 SELECT * FROM ..."
 
-        # 默认不返回（避免误报）
         return ""
 
-
     def consume(self, expected: Optional[str] = None) -> Token:
-        """
-        灵活地消耗 token：
-        - expected 为类型名（IDENTIFIER, NUMBER, STRING, OPERATOR, DELIMITER, KEYWORD）时按 tok.type 检查
-        - expected 为字面量（如 'SELECT','FROM','(',')',',',';','.' 等）时比较 tok.value（不区分大小写）
-        - 若 '=' 作为字面量，而 lexer 把它标为 OPERATOR，也能接受
-        """
         tok = self.current_token()
         if not tok:
             raise Exception(self._format_err(expected or "TOKEN", None))
@@ -402,16 +381,13 @@ class Parser:
 
         if expected:
             up_exp = str(expected).upper()
-            # 类型名
             if up_exp in ("IDENTIFIER", "NUMBER", "STRING", "OPERATOR", "DELIMITER", "KEYWORD"):
                 if getattr(tok, "type", "").upper() != up_exp:
-                    # 允许把 '=' 作为 OPERATOR
                     if up_exp == "OPERATOR" and str(tok.value) in ("=", ">", "<", "<=", ">=", "<>"):
                         pass
                     else:
                         _raise(expected, tok)
             else:
-                # 字面量匹配
                 if isinstance(tok.value, str):
                     if tok.value.upper() != up_exp and str(tok.value) != expected:
                         if up_exp == "IDENTIFIER" and getattr(tok, "type", "").upper() == "IDENTIFIER":
@@ -440,6 +416,8 @@ class Parser:
         if not tok:
             return None
         kw = str(tok.value).upper() if isinstance(tok.value, str) else str(tok.value)
+        if kw == "EXPLAIN":
+            return self.parse_explain()
         if kw == "CREATE":
             return self.parse_create_table()
         if kw == "INSERT":
@@ -452,15 +430,40 @@ class Parser:
             return self.parse_update()
         raise Exception(f"[语法错误] 不支持的语句类型: {tok.value} (line={tok.line}, col={tok.column})")
 
+    # ---------------- EXPLAIN ----------------
+    def parse_explain(self) -> ExplainNode:
+        self.consume("EXPLAIN")
+        # 直接查看下一个关键字来决定内部语句
+        tok = self.current_token()
+        if not tok or getattr(tok, "type", "") != "KEYWORD":
+            raise Exception(self._format_err("CREATE/SELECT/INSERT/UPDATE/DELETE", tok))
+        kw = str(tok.value).upper()
+        if kw == "SELECT":
+            inner = self.parse_select()
+        elif kw == "CREATE":
+            inner = self.parse_create_table()
+        elif kw == "INSERT":
+            inner = self.parse_insert()
+        elif kw == "UPDATE":
+            inner = self.parse_update()
+        elif kw == "DELETE":
+            inner = self.parse_delete()
+        else:
+            raise Exception(self._format_err("CREATE/SELECT/INSERT/UPDATE/DELETE", tok))
+        return ExplainNode(inner)
+
     # ---------------- CREATE ----------------
     def parse_create_table(self) -> CreateTableNode:
+        # 文法（用于可视化）
         grammar = {
-            "CreateStmt": [["CREATE", "TABLE", "IDENTIFIER", "(", "ColumnDefs", ")", ";"]],
-            "ColumnDefs": [["IDENTIFIER", "Type", "ColumnDefsTail"]],
-            "ColumnDefsTail": [[",", "IDENTIFIER", "Type", "ColumnDefsTail"], ["ε"]],
-            "Type": [["INT"], ["VARCHAR"]],
+            "CreateStmt": [["CREATE", "TABLE", "IDENTIFIER", "(", "DefList", ")", ";"]],
+            "DefList": [["Def", "DefTail"]],
+            "DefTail": [[",", "Def", "DefTail"], ["ε"]],
+            "Def": [["IDENTIFIER", "Type"], ["FOREIGN", "KEY", "(", "IDENTIFIER", ")", "REFERENCES", "IDENTIFIER", "(", "IDENTIFIER", ")"]],
+            "Type": [["INT"], ["VARCHAR"], ["FLOAT"], ["BOOL"]],
         }
-        terminals = {"CREATE", "TABLE", "IDENTIFIER", "(", ")", ",", "INT", "VARCHAR", ";", "#"}
+        terminals = {"CREATE","TABLE","IDENTIFIER","(",")",",","INT","VARCHAR","FLOAT","BOOL",
+                     "FOREIGN","KEY","REFERENCES",";","#"}
         self.run_ll1_debug(grammar, "CreateStmt", terminals)
 
         self.consume("CREATE")
@@ -469,21 +472,44 @@ class Parser:
         table_name = table_tok.value
         self.consume("(")
         columns: List[Tuple[str, str]] = []
-        col_tok = self.consume("IDENTIFIER")
-        type_tok = self.consume()  # INT/VARCHAR 可能被标成 KEYWORD/IDENTIFIER
-        columns.append((col_tok.value, str(type_tok.value).upper()))
+        constraints: List[Tuple[str,str,str,str]] = []
+
+        def parse_def():
+            t = self.current_token()
+            if not t:
+                raise Exception(self._format_err("DEF", None))
+            if isinstance(t.value, str) and t.value.upper() == "FOREIGN":
+                # FOREIGN KEY (col) REFERENCES ref_table(ref_col)
+                self.consume("FOREIGN")
+                self.consume("KEY")
+                self.consume("(")
+                local_col = self.consume("IDENTIFIER").value
+                self.consume(")")
+                self.consume("REFERENCES")
+                ref_table = self.consume("IDENTIFIER").value
+                self.consume("(")
+                ref_col = self.consume("IDENTIFIER").value
+                self.consume(")")
+                constraints.append(("FOREIGN_KEY", str(local_col), str(ref_table), str(ref_col)))
+            else:
+                # IDENTIFIER Type
+                col_tok = self.consume("IDENTIFIER")
+                type_tok = self.consume()  # INT/VARCHAR/FLOAT/BOOL 可能被 KEYWORD/IDENTIFIER
+                columns.append((str(col_tok.value), str(type_tok.value).upper()))
+
+        # 第一个 Def
+        parse_def()
+        # 后续 , Def
         while self.current_token() and self.current_token().value == ",":
             self.consume(",")
-            col_tok = self.consume("IDENTIFIER")
-            type_tok = self.consume()
-            columns.append((col_tok.value, str(type_tok.value).upper()))
+            parse_def()
+
         self.consume(")")
         self.consume(";")
-        return CreateTableNode(table_name, columns, pos=table_tok.line)
+        return CreateTableNode(table_name, columns, constraints=constraints, pos=table_tok.line)
 
     # ---------------- INSERT ----------------
     def parse_insert(self) -> InsertNode:
-        # ✅ 左因子化后的 LL(1) 文法，用于可视化推导（避免带列名/不带列名两条产生式冲突）
         grammar = {
             "InsertStmt": [["INSERT", "INTO", "IDENTIFIER", "InsertCols", "VALUES", "(", "ValueList", ")", "InsertTail", ";"]],
             "InsertCols": [["(", "ColumnList", ")"], ["ε"]],
@@ -500,7 +526,6 @@ class Parser:
         }
         self.run_ll1_debug(grammar, "InsertStmt", terminals)
 
-        # --- 真正解析（原实现已正确处理“列名可选”与多行 VALUES”） ---
         self.consume("INSERT")
         self.consume("INTO")
         tbl_tok = self.consume("IDENTIFIER")
@@ -538,23 +563,25 @@ class Parser:
 
     # ---------------- SELECT ----------------
     def parse_select(self) -> SelectNode:
-        # 教学可视化用的 LL(1) 文法（支持布尔表达式与括号）
+        # 教学可视化用的 LL(1) 文法（支持聚合与布尔表达式）
         grammar = {
             "SelectStmt": [["SELECT", "SelectList", "FROM", "TableRef", "JoinList", "WhereOpt", "GroupOpt", "OrderOpt", ";"]],
-            # 支持 SELECT * ...
-            "SelectList": [["*"], ["ColumnRef", "SelectListTail"]],
-            "SelectListTail": [[",", "ColumnRef", "SelectListTail"], ["ε"]],
+            "SelectList": [["*"], ["SelectItem", "SelectListTail"]],
+            "SelectListTail": [[",", "SelectItem", "SelectListTail"], ["ε"]],
+            "SelectItem": [["Aggregate", "AliasOpt"], ["ColumnRef", "AliasOpt"]],
+            "AliasOpt": [["AS", "IDENTIFIER"], ["IDENTIFIER"], ["ε"]],
+            "Aggregate": [["COUNT", "(", "AggArg", ")"], ["SUM", "(", "ColumnRef", ")"], ["AVG", "(", "ColumnRef", ")"]],
+            "AggArg": [["*"], ["ColumnRef"]],
             "ColumnRef": [["IDENTIFIER", "ColumnRefTail"]],
             "ColumnRefTail": [[".", "IDENTIFIER"], ["ε"]],
-            "TableRef": [["IDENTIFIER", "AliasOpt"]],
-            "AliasOpt": [["IDENTIFIER"], ["ε"]],
+            "TableRef": [["IDENTIFIER", "AliasOptSimple"]],
+            "AliasOptSimple": [["IDENTIFIER"], ["ε"]],
             "JoinList": [["Join", "JoinList"], ["ε"]],
-            "Join": [["JOIN", "IDENTIFIER", "AliasOpt", "ON", "BoolExpr"]],
+            "Join": [["JOIN", "IDENTIFIER", "AliasOptSimple", "ON", "BoolExpr"]],
             "WhereOpt": [["WHERE", "BoolExpr"], ["ε"]],
             "GroupOpt": [["GROUP", "BY", "IDENTIFIER"], ["ε"]],
             "OrderOpt": [["ORDER", "BY", "IDENTIFIER", "OrderDir"], ["ε"]],
             "OrderDir": [["ASC"], ["DESC"], ["ε"]],
-            # 布尔表达式（LL(1) 版本）
             "BoolExpr": [["BoolTerm", "BoolExprTail"]],
             "BoolExprTail": [["OR", "BoolTerm", "BoolExprTail"], ["ε"]],
             "BoolTerm": [["BoolFactor", "BoolTermTail"]],
@@ -563,8 +590,9 @@ class Parser:
             "Predicate": [["ColumnRef", "OPERATOR", "Value"]],
             "Value": [["NUMBER"], ["STRING"], ["IDENTIFIER"], ["ColumnRef"]],
         }
-        terminals = {"SELECT", "IDENTIFIER", ",", ".", "FROM", "JOIN", "ON", "WHERE", "GROUP", "BY", "ORDER",
-                     "ASC", "DESC", "OPERATOR", "NUMBER", "STRING", "AND", "OR", "NOT", "(", ")", "*", ";", "#"}
+        terminals = {"SELECT","IDENTIFIER",",",".","FROM","JOIN","ON","WHERE","GROUP","BY","ORDER",
+                     "ASC","DESC","OPERATOR","NUMBER","STRING","AND","OR","NOT","(",")","*","AS",";","#",
+                     "COUNT","SUM","AVG"}
         self.run_ll1_debug(grammar, "SelectStmt", terminals)
 
         self.consume("SELECT")
@@ -578,8 +606,115 @@ class Parser:
                 col = f"{col}.{str(right).strip()}"
             return col
 
-        # ---- 递归式布尔表达式解析（生成原样 SQL 文本）----
-        # precedence: NOT > AND > OR
+        def parse_alias_opt() -> Optional[str]:
+            if self.current_token() and isinstance(self.current_token().value, str):
+                up = self.current_token().value.upper()
+                if up == "AS":
+                    self.consume("AS")
+                    return str(self.consume("IDENTIFIER").value)
+                # 裸别名（不与关键字冲突）
+                if getattr(self.current_token(), "type", "") == "IDENTIFIER":
+                    return str(self.consume("IDENTIFIER").value)
+            return None
+
+        def parse_select_item() -> Tuple[str, Optional[str]]:
+            t = self.current_token()
+            if not t:
+                raise Exception(self._format_err("SelectItem", None))
+            if isinstance(t.value, str) and t.value.upper() in ("COUNT", "SUM", "AVG"):
+                func = t.value.upper()
+                self.consume(func)
+                self.consume("(")
+                if func == "COUNT" and self.current_token() and self.current_token().value == "*":
+                    self.consume("*")
+                    self.consume(")")
+                    alias = parse_alias_opt()
+                    return (f"COUNT(*)", alias)
+                # SUM/AVG 或 COUNT(col)
+                col = parse_column_ref()
+                self.consume(")")
+                alias = parse_alias_opt()
+                return (f"{func}({col})", alias)
+            # 普通列
+            col = parse_column_ref()
+            alias = parse_alias_opt()
+            return (col, alias)
+
+        # Select list
+        select_items: List[Tuple[str, Optional[str]]] = []
+        if self.current_token() and self.current_token().value == "*":
+            self.consume("*")
+            select_items.append(("*", None))
+        else:
+            select_items.append(parse_select_item())
+            while self.current_token() and self.current_token().value == ",":
+                self.consume(",")
+                select_items.append(parse_select_item())
+
+        # FROM table [alias]
+        self.consume("FROM")
+        tbl_tok = self.consume("IDENTIFIER")
+        table_name = str(tbl_tok.value).strip()
+        table_alias = None
+        if self.current_token() and getattr(self.current_token(), "type", "").upper() == "IDENTIFIER":
+            nxt = str(self.current_token().value).upper()
+            if nxt not in ("JOIN", "WHERE", "GROUP", "ORDER", ";"):
+                table_alias = str(self.consume("IDENTIFIER").value).strip()
+        if table_alias:
+            table_alias = table_alias.strip().strip("()")
+
+        node = SelectNode(select_items, table_name, from_alias=table_alias, pos=tbl_tok.line)
+
+        # JOIN 列表
+        while self.current_token() and isinstance(self.current_token().value, str) and self.current_token().value.upper() == "JOIN":
+            self.consume("JOIN")
+            right_tbl_tok = self.consume("IDENTIFIER")
+            right_tbl = str(right_tbl_tok.value).strip()
+            right_alias = None
+            if self.current_token() and getattr(self.current_token(), "type", "").upper() == "IDENTIFIER":
+                nxt = str(self.current_token().value).upper()
+                if nxt not in ("ON", "JOIN", "WHERE", "GROUP", "ORDER", ";"):
+                    right_alias = str(self.consume("IDENTIFIER").value).strip()
+            if right_alias:
+                right_alias = right_alias.strip().strip("()")
+            self.consume("ON")
+            cond_sql = self._parse_bool_expr_sql()  # 支持 a=b AND/OR ... 以及括号/NOT
+            node.joins.append((right_tbl, right_alias, cond_sql))
+
+        # WHERE
+        if self.current_token() and isinstance(self.current_token().value, str) and self.current_token().value.upper() == "WHERE":
+            self.consume("WHERE")
+            node.where_condition = self._parse_bool_expr_sql()
+
+        # GROUP BY
+        if self.current_token() and isinstance(self.current_token().value, str) and self.current_token().value.upper() == "GROUP":
+            self.consume("GROUP")
+            self.consume("BY")
+            node.group_by = str(self.consume("IDENTIFIER").value).strip()
+
+        # ORDER BY
+        if self.current_token() and isinstance(self.current_token().value, str) and self.current_token().value.upper() == "ORDER":
+            self.consume("ORDER")
+            self.consume("BY")
+            node.order_by = str(self.consume("IDENTIFIER").value).strip()
+            if self.current_token() and isinstance(self.current_token().value, str) and self.current_token().value.upper() in ("ASC", "DESC"):
+                node.order_direction = self.consume().value.upper()
+
+        self.consume(";")
+        return node
+
+    # ---- 递归式布尔表达式解析（生成原样 SQL 文本）----
+    # precedence: NOT > AND > OR
+    def _parse_bool_expr_sql(self) -> str:
+        def parse_column_ref() -> str:
+            id_tok = self.consume("IDENTIFIER")
+            col = str(id_tok.value).strip()
+            if self.current_token() and self.current_token().value == ".":
+                self.consume(".")
+                right = self.consume("IDENTIFIER").value
+                col = f"{col}.{str(right).strip()}"
+            return col
+
         def parse_value_sql() -> str:
             t = self.current_token()
             if not t:
@@ -598,7 +733,6 @@ class Parser:
                 inner = parse_bool_expr()
                 self.consume(")")
                 return f"({inner})"
-            # 退化为列引用
             return parse_column_ref()
 
         def parse_predicate() -> str:
@@ -636,71 +770,8 @@ class Parser:
                 right = parse_bool_term()
                 left = f"({left} OR {right})"
             return left
-        # --------------------------------------------------
 
-        # Select list
-        select_items: List[Tuple[str, Optional[str]]] = []
-        if self.current_token() and self.current_token().value == "*":
-            self.consume("*")
-            select_items.append(("*", None))
-        else:
-            select_items.append((parse_column_ref(), None))
-            while self.current_token() and self.current_token().value == ",":
-                self.consume(",")
-                select_items.append((parse_column_ref(), None))
-
-        # FROM table [alias]
-        self.consume("FROM")
-        tbl_tok = self.consume("IDENTIFIER")
-        table_name = str(tbl_tok.value).strip()
-        table_alias = None
-        if self.current_token() and getattr(self.current_token(), "type", "").upper() == "IDENTIFIER":
-            # 防止把关键字当别名
-            nxt = str(self.current_token().value).upper()
-            if nxt not in ("JOIN", "WHERE", "GROUP", "ORDER", ";"):
-                table_alias = str(self.consume("IDENTIFIER").value).strip()
-        if table_alias:
-            table_alias = table_alias.strip().strip("()")
-
-        node = SelectNode(select_items, table_name, from_alias=table_alias, pos=tbl_tok.line)
-
-        # JOIN 列表
-        while self.current_token() and isinstance(self.current_token().value, str) and self.current_token().value.upper() == "JOIN":
-            self.consume("JOIN")
-            right_tbl_tok = self.consume("IDENTIFIER")
-            right_tbl = str(right_tbl_tok.value).strip()
-            right_alias = None
-            if self.current_token() and getattr(self.current_token(), "type", "").upper() == "IDENTIFIER":
-                nxt = str(self.current_token().value).upper()
-                if nxt not in ("ON", "JOIN", "WHERE", "GROUP", "ORDER", ";"):
-                    right_alias = str(self.consume("IDENTIFIER").value).strip()
-            if right_alias:
-                right_alias = right_alias.strip().strip("()")
-            self.consume("ON")
-            cond_sql = parse_bool_expr()  # 支持 a=b AND/OR ... 以及括号/NOT
-            node.joins.append((right_tbl, right_alias, cond_sql))
-
-        # WHERE
-        if self.current_token() and isinstance(self.current_token().value, str) and self.current_token().value.upper() == "WHERE":
-            self.consume("WHERE")
-            node.where_condition = parse_bool_expr()
-
-        # GROUP BY
-        if self.current_token() and isinstance(self.current_token().value, str) and self.current_token().value.upper() == "GROUP":
-            self.consume("GROUP")
-            self.consume("BY")
-            node.group_by = str(self.consume("IDENTIFIER").value).strip()
-
-        # ORDER BY
-        if self.current_token() and isinstance(self.current_token().value, str) and self.current_token().value.upper() == "ORDER":
-            self.consume("ORDER")
-            self.consume("BY")
-            node.order_by = str(self.consume("IDENTIFIER").value).strip()
-            if self.current_token() and isinstance(self.current_token().value, str) and self.current_token().value.upper() in ("ASC", "DESC"):
-                node.order_direction = self.consume().value.upper()
-
-        self.consume(";")
-        return node
+        return parse_bool_expr()
 
     # ---------------- DELETE ----------------
     def parse_delete(self) -> DeleteNode:
@@ -720,7 +791,6 @@ class Parser:
             self.consume("WHERE")
             left = str(self.consume("IDENTIFIER").value).strip()
             op = self.consume("OPERATOR").value
-            # 右值
             if self.current_token() and getattr(self.current_token(), "type", "").upper() == "IDENTIFIER":
                 right = str(self.consume("IDENTIFIER").value).strip()
             else:
@@ -762,7 +832,6 @@ class Parser:
                 t = self.consume()
                 return t.value
 
-        # 第一个赋值
         col = str(self.consume("IDENTIFIER").value).strip()
         if self.current_token() and self.current_token().value == "=":
             self.consume("=")
@@ -770,7 +839,7 @@ class Parser:
             self.consume("OPERATOR")
         val = parse_value_any()
         assignments.append((col, val))
-        # 后续赋值
+
         while self.current_token() and self.current_token().value == ",":
             self.consume(",")
             col = str(self.consume("IDENTIFIER").value).strip()
@@ -782,7 +851,7 @@ class Parser:
             assignments.append((col, val))
 
         node = UpdateNode(table_name, assignments, pos=tbl_tok.line)
-        # WHERE
+
         if self.current_token() and isinstance(self.current_token().value, str) and self.current_token().value.upper() == "WHERE":
             self.consume("WHERE")
             left = str(self.consume("IDENTIFIER").value).strip()

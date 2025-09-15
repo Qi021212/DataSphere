@@ -1,157 +1,213 @@
-# sql_compiler/ll1_debugger.py
-# 严格 LL(1) 调试器：计算 FIRST/FOLLOW，构建预测分析表，驱动推导过程
-
-from typing import List, Dict, Set, Optional
-from sql_compiler.lexer import Token
+# sql_compiler/ll1_grammars_demo.py
+from typing import Dict, List, Set, Tuple
+from sql_compiler.lexer import Lexer, Token
 
 
 class LL1ParserDebugger:
-    def __init__(self,
-                 tokens: List[Token],
-                 grammar: Dict[str, List[List[str]]],
-                 start_symbol: str,
-                 terminals: Set[str],
-                 non_terminals: Set[str]):
-        self.tokens = list(tokens)
-        self.grammar = grammar
-        self.start_symbol = start_symbol
-        self.terminals = terminals
-        self.non_terminals = non_terminals
+    pass
 
-        self.input_stream = list(self.tokens) + [None]  # None 表示输入结束符 #
 
-        # FIRST/FOLLOW 集合
-        self.FIRST = {nt: set() for nt in self.non_terminals}
-        self.FOLLOW = {nt: set() for nt in self.non_terminals}
+from sql_compiler.ll1_debugger import LL1ParserDebugger
 
-        # 预测分析表
-        self.parse_table = {}
+# ---------- 文法集合（全是左因子/无左递归，适合 LL(1) 调试） ----------
 
-        self._compute_first_sets()
-        self._compute_follow_sets()
-        self._build_parse_table()
+def grammar_select_with_aggs() -> Tuple[Dict[str, List[List[str]]], Set[str], Set[str], str]:
+    grammar = {
+        "SelectStmt": [["SELECT", "SelectList", "FROM", "TableRef", "JoinList", "WhereOpt", "GroupOpt", "OrderOpt", ";"]],
+        "SelectList": [["*"], ["SelectItem", "SelectListTail"]],
+        "SelectListTail": [[",", "SelectItem", "SelectListTail"], ["ε"]],
+        "SelectItem": [["Aggregate", "AliasOpt"], ["ColumnRef", "AliasOpt"]],
+        "AliasOpt": [["AS", "IDENTIFIER"], ["IDENTIFIER"], ["ε"]],
 
-    # ---------- 工具函数 ----------
-    def _tok_display(self, tok: Optional[Token]) -> str:
-        if tok is None:
-            return "#"
-        if tok.type == "NUMBER":
-            return str(tok.value)
-        if isinstance(tok.value, str):
-            return tok.value.upper()
-        return str(tok.value)
+        "Aggregate": [["COUNT", "(", "AggArg", ")"],
+                      ["SUM", "(", "ColumnRef", ")"],
+                      ["AVG", "(", "ColumnRef", ")"]],
+        "AggArg": [["*"], ["ColumnRef"]],
 
-    def _symbol_is_terminal(self, sym: str) -> bool:
-        return sym in self.terminals or sym not in self.non_terminals
+        "ColumnRef": [["IDENTIFIER", "ColumnRefTail"]],
+        "ColumnRefTail": [[".", "IDENTIFIER"], ["ε"]],
 
-    # ---------- FIRST 集 ----------
-    def _first(self, symbols: List[str]) -> Set[str]:
-        """求符号串的 FIRST 集"""
-        if not symbols:
-            return {"ε"}
-        first = set()
-        for sym in symbols:
-            if self._symbol_is_terminal(sym):
-                first.add(sym)
-                return first
-            else:  # 非终结符
-                first |= (self.FIRST[sym] - {"ε"})
-                if "ε" not in self.FIRST[sym]:
-                    return first
-        first.add("ε")
-        return first
+        "TableRef": [["IDENTIFIER", "TableAliasOpt"]],
+        "TableAliasOpt": [["IDENTIFIER"], ["ε"]],
 
-    def _compute_first_sets(self):
-        changed = True
-        while changed:
-            changed = False
-            for A, prods in self.grammar.items():
-                for prod in prods:
-                    first = self._first(prod)
-                    before = len(self.FIRST[A])
-                    self.FIRST[A] |= first
-                    if len(self.FIRST[A]) > before:
-                        changed = True
+        "JoinList": [["Join", "JoinList"], ["ε"]],
+        "Join": [["JOIN", "IDENTIFIER", "TableAliasOpt", "ON", "BoolExpr"]],
 
-    # ---------- FOLLOW 集 ----------
-    def _compute_follow_sets(self):
-        self.FOLLOW[self.start_symbol].add("#")
-        changed = True
-        while changed:
-            changed = False
-            for A, prods in self.grammar.items():
-                for prod in prods:
-                    trailer = self.FOLLOW[A].copy()
-                    for sym in reversed(prod):
-                        if sym in self.non_terminals:
-                            before = len(self.FOLLOW[sym])
-                            self.FOLLOW[sym] |= trailer
-                            if "ε" in self.FIRST[sym]:
-                                trailer |= (self.FIRST[sym] - {"ε"})
-                            else:
-                                trailer = self.FIRST[sym].copy()
-                            if len(self.FOLLOW[sym]) > before:
-                                changed = True
-                        else:
-                            trailer = {sym}
+        "WhereOpt": [["WHERE", "BoolExpr"], ["ε"]],
+        "GroupOpt": [["GROUP", "BY", "IDENTIFIER"], ["ε"]],
+        "OrderOpt": [["ORDER", "BY", "IDENTIFIER", "OrderDir"], ["ε"]],
+        "OrderDir": [["ASC"], ["DESC"], ["ε"]],
 
-    # ---------- 构建预测分析表 ----------
-    def _build_parse_table(self):
-        for A, prods in self.grammar.items():
-            for prod in prods:
-                first = self._first(prod)
-                for t in (first - {"ε"}):
-                    self.parse_table[(A, t)] = prod
-                if "ε" in first:
-                    for t in self.FOLLOW[A]:
-                        self.parse_table[(A, t)] = prod
+        # ---- Boolean Expr (NOT > AND > OR) ----
+        "BoolExpr": [["BoolTerm", "BoolExprTail"]],
+        "BoolExprTail": [["OR", "BoolTerm", "BoolExprTail"], ["ε"]],
+        "BoolTerm": [["BoolFactor", "BoolTermTail"]],
+        "BoolTermTail": [["AND", "BoolFactor", "BoolTermTail"], ["ε"]],
+        "BoolFactor": [["NOT", "BoolFactor"], ["(", "BoolExpr", ")"], ["Predicate"]],
+        "Predicate": [["ColumnRef", "OPERATOR", "Value"]],
+        "Value": [["NUMBER"], ["STRING"], ["IDENTIFIER"], ["ColumnRef"]],
+    }
+    non_terminals = set(grammar.keys())
+    terminals = {
+        "SELECT","FROM","JOIN","ON","WHERE","GROUP","BY","ORDER","ASC","DESC",
+        "AS","COUNT","SUM","AVG",
+        "IDENTIFIER","NUMBER","STRING","OPERATOR",
+        "(",")",",",".","*",";","#"
+    }
+    start = "SelectStmt"
+    return grammar, terminals, non_terminals, start
 
-    # ---------- 主执行方法 ----------
-    def run(self):
-        print("\n[LL1 推导过程]")
-        stack = ["#", self.start_symbol]
-        ip = 0
 
-        while stack:
-            top = stack[-1]
-            cur_tok = self.input_stream[ip]
-            cur_sym = self._tok_display(cur_tok)
+def grammar_insert() -> Tuple[Dict[str, List[List[str]]], Set[str], Set[str], str]:
+    grammar = {
+        "InsertStmt": [["INSERT","INTO","IDENTIFIER","InsertCols","VALUES","(", "ValueList", ")", "InsertTail",";"]],
+        "InsertCols": [["(", "ColumnList", ")"], ["ε"]],
+        "ColumnList": [["IDENTIFIER","ColumnListTail"]],
+        "ColumnListTail": [[",","IDENTIFIER","ColumnListTail"], ["ε"]],
+        "ValueList": [["Value","ValueListTail"]],
+        "ValueListTail": [[",","Value","ValueListTail"], ["ε"]],
+        "Value": [["NUMBER"], ["STRING"], ["IDENTIFIER"]],
+        "InsertTail": [[",","(", "ValueList", ")", "InsertTail"], ["ε"]],
+    }
+    non_terminals = set(grammar.keys())
+    terminals = {"INSERT","INTO","VALUES","IDENTIFIER","NUMBER","STRING","(",")",",",";","#"}
+    return grammar, terminals, non_terminals, "InsertStmt"
 
-            stack_str = " ".join(stack)
-            input_str = " ".join(self._tok_display(t) for t in self.input_stream[ip:])
-            print(f"栈: {stack_str:<40} 输入: {input_str:<50} 处理: {top}")
 
-            if top == "#" and cur_tok is None:
-                print("✅ 输入完整匹配，分析成功")
-                return True
+def grammar_update() -> Tuple[Dict[str, List[List[str]]], Set[str], Set[str], str]:
+    grammar = {
+        "UpdateStmt": [["UPDATE","IDENTIFIER","SET","AssignmentList","WhereOpt",";"]],
+        "AssignmentList": [["IDENTIFIER","AssignOp","Value","AssignTail"]],
+        "AssignTail": [[",","IDENTIFIER","AssignOp","Value","AssignTail"], ["ε"]],
+        "AssignOp": [["OPERATOR"]],  # (=) 通常被 lexer 记为 OPERATOR
+        "WhereOpt": [["WHERE","IDENTIFIER","OPERATOR","Value"], ["ε"]],
+        "Value": [["NUMBER"], ["STRING"], ["IDENTIFIER"]],
+    }
+    non_terminals = set(grammar.keys())
+    terminals = {"UPDATE","IDENTIFIER","SET","OPERATOR",",","WHERE","NUMBER","STRING",";","#"}
+    return grammar, terminals, non_terminals, "UpdateStmt"
 
-            # 如果栈顶是终结符
-            if self._symbol_is_terminal(top):
-                if ((cur_tok and str(cur_tok.value).upper() == top.upper())
-                        or (top == cur_tok.type)  # e.g. IDENTIFIER, NUMBER
-                        or (top == cur_tok.value)):
-                    stack.pop()
-                    ip += 1
-                else:
-                    print(f"❌ 出错: 期望 {top}, 实际 {cur_sym}")
-                    return False
-            # 栈顶为非终结符
-            elif top in self.non_terminals:
-                prod = self.parse_table.get((top, cur_sym))
-                if not prod:
-                    # 特殊情况：若 cur_sym 是 token.type（IDENTIFIER/NUMBER）
-                    prod = self.parse_table.get((top, cur_tok.type if cur_tok else "#"))
-                if not prod:
-                    print(f"❌ 出错: 无法从 {top} 推导输入 {cur_sym}")
-                    return False
-                stack.pop()
-                if prod != ["ε"]:
-                    for sym in reversed(prod):
-                        stack.append(sym)
-                print(f"使用产生式: {top} -> {' '.join(prod)}")
-            else:
-                print(f"❌ 出错: 未知符号 {top}")
-                return False
 
-        print("❌ 栈清空但未接受输入")
-        return False
+def grammar_delete() -> Tuple[Dict[str, List[List[str]]], Set[str], Set[str], str]:
+    grammar = {
+        "DeleteStmt": [["DELETE","FROM","IDENTIFIER","WhereOpt",";"]],
+        "WhereOpt": [["WHERE","IDENTIFIER","OPERATOR","Value"], ["ε"]],
+        "Value": [["NUMBER"], ["STRING"], ["IDENTIFIER"]],
+    }
+    non_terminals = set(grammar.keys())
+    terminals = {"DELETE","FROM","IDENTIFIER","WHERE","OPERATOR","NUMBER","STRING",";","#"}
+    return grammar, terminals, non_terminals, "DeleteStmt"
+
+
+def grammar_create_table() -> Tuple[Dict[str, List[List[str]]], Set[str], Set[str], str]:
+    grammar = {
+        "CreateStmt": [["CREATE","TABLE","IDENTIFIER","(","ColumnDefs",")",";"]],
+        "ColumnDefs": [["IDENTIFIER","Type","ColumnDefsTail"]],
+        "ColumnDefsTail": [[",","IDENTIFIER","Type","ColumnDefsTail"], ["ε"]],
+        "Type": [["INT"], ["VARCHAR"], ["FLOAT"], ["BOOL"]],
+    }
+    non_terminals = set(grammar.keys())
+    terminals = {"CREATE","TABLE","IDENTIFIER","(",")",",","INT","VARCHAR","FLOAT","BOOL",";","#"}
+    return grammar, terminals, non_terminals, "CreateStmt"
+
+
+def grammar_explain_of(kind: str) -> Tuple[Dict[str, List[List[str]]], Set[str], Set[str], str]:
+    """
+    生成 EXPLAIN <kind> 的文法。为了保持 LL(1) 简洁，我们把 <kind> 嵌回去。
+    kind ∈ {"select","insert","update","delete","create"}
+    """
+    if kind == "select":
+        inner, t_in, nt_in, start_in = grammar_select_with_aggs()
+        grammar = {"ExplainStmt": [["EXPLAIN", start_in]]}
+        grammar.update(inner)
+        terminals = set(t_in) | {"EXPLAIN"}
+        non_terminals = set(nt_in) | {"ExplainStmt"}
+        start = "ExplainStmt"
+        return grammar, terminals, non_terminals, start
+
+    if kind == "insert":
+        inner, t_in, nt_in, start_in = grammar_insert()
+        grammar = {"ExplainStmt": [["EXPLAIN", start_in]]}
+        grammar.update(inner)
+        terminals = set(t_in) | {"EXPLAIN"}
+        non_terminals = set(nt_in) | {"ExplainStmt"}
+        return grammar, terminals, non_terminals, "ExplainStmt"
+
+    if kind == "update":
+        inner, t_in, nt_in, start_in = grammar_update()
+        grammar = {"ExplainStmt": [["EXPLAIN", start_in]]}
+        grammar.update(inner)
+        terminals = set(t_in) | {"EXPLAIN"}
+        non_terminals = set(nt_in) | {"ExplainStmt"}
+        return grammar, terminals, non_terminals, "ExplainStmt"
+
+    if kind == "delete":
+        inner, t_in, nt_in, start_in = grammar_delete()
+        grammar = {"ExplainStmt": [["EXPLAIN", start_in]]}
+        grammar.update(inner)
+        terminals = set(t_in) | {"EXPLAIN"}
+        non_terminals = set(nt_in) | {"ExplainStmt"}
+        return grammar, terminals, non_terminals, "ExplainStmt"
+
+    if kind == "create":
+        inner, t_in, nt_in, start_in = grammar_create_table()
+        grammar = {"ExplainStmt": [["EXPLAIN", start_in]]}
+        grammar.update(inner)
+        terminals = set(t_in) | {"EXPLAIN"}
+        non_terminals = set(nt_in) | {"ExplainStmt"}
+        return grammar, terminals, non_terminals, "ExplainStmt"
+
+    raise ValueError(f"unsupported EXPLAIN kind: {kind}")
+
+
+# ---------- 统一调试入口 ----------
+
+def run_debug(sql_text: str, kind: str = "select") -> bool:
+    """
+    kind ∈ {"select","insert","update","delete","create","explain-select",
+            "explain-insert","explain-update","explain-delete","explain-create"}
+    """
+    # 1) 词法
+    lexer = Lexer(sql_text)
+    tokens: List[Token] = lexer.get_tokens()
+
+    # 2) 选择文法
+    if kind == "select":
+        grammar, terminals, non_terminals, start = grammar_select_with_aggs()
+    elif kind == "insert":
+        grammar, terminals, non_terminals, start = grammar_insert()
+    elif kind == "update":
+        grammar, terminals, non_terminals, start = grammar_update()
+    elif kind == "delete":
+        grammar, terminals, non_terminals, start = grammar_delete()
+    elif kind == "create":
+        grammar, terminals, non_terminals, start = grammar_create_table()
+    elif kind.startswith("explain-"):
+        sub = kind.split("-", 1)[1]
+        grammar, terminals, non_terminals, start = grammar_explain_of(sub)
+    else:
+        raise ValueError(f"unknown kind: {kind}")
+
+    # 3) 调试运行
+    dbg = LL1ParserDebugger(tokens, grammar, start, terminals, non_terminals)
+    return dbg.run()
+
+
+# ---------- 用法示例（在你的 REPL/单元测试里调用） ----------
+if __name__ == "__main__":
+    cases = [
+        ("SELECT COUNT(*) FROM t;", "select"),
+        ("SELECT SUM(age) AS s, AVG(age) a FROM t WHERE age >= 18 ORDER BY a DESC;", "select"),
+        ("SELECT name, COUNT(*) AS c FROM t GROUP BY name;", "select"),
+        ("EXPLAIN SELECT AVG(age) FROM t WHERE age > 18;", "explain-select"),
+        ("CREATE TABLE student(id INT, name VARCHAR, age INT);", "create"),
+        ("EXPLAIN CREATE TABLE t(id INT, v FLOAT);", "explain-create"),
+        ("INSERT INTO t(id,name) VALUES (1,'Alice'),(2,'Bob');", "insert"),
+        ("UPDATE t SET age = 21 WHERE id = 1;", "update"),
+        ("DELETE FROM t WHERE id = 2;", "delete"),
+    ]
+    for sql, k in cases:
+        print("\n" + "="*80)
+        print(f"-- {k} :: {sql}")
+        ok = run_debug(sql, k)
+        print("RESULT:", ok)

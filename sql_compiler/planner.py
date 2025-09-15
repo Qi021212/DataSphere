@@ -18,11 +18,45 @@ class ExecutionPlan:
 
     def explain(self, indent: int = 0) -> str:
         pad = "  " * indent
-        out = f"{pad}{self.plan_type}: {self.details.get('columns') or ''}"
+
+        if self.plan_type == "Explain":
+            inner = self.details.get("inner_plan")
+            head = f"{pad}Explain:"
+            if isinstance(inner, ExecutionPlan):
+                return head + "\n" + inner.explain(indent + 1)
+            return head + " <empty>"
+
+        cols = self.details.get('columns') or []
+        aggs = self.details.get('aggregates') or []
+        cols_str = ", ".join(cols) if isinstance(cols, list) else str(cols)
+        aggs_str = ", ".join(
+            f"{a.get('func')}({a.get('arg')})" + (f" AS {a.get('alias')}" if a.get('alias') else "")
+            for a in aggs
+        )
+
+        suffix_parts = []
+        if cols_str:
+            suffix_parts.append(cols_str)
+        if aggs_str:
+            suffix_parts.append(f"[Agg: {aggs_str}]")
+        suffix = "  ".join(suffix_parts)
+
+        out = f"{pad}{self.plan_type}: {suffix}"
+
         if self.plan_type == "Select":
             cond = self.details.get("condition")
             if cond:
                 out += f"  [Filter: {cond}]"
+
+            gb = self.details.get("group_by")
+            if gb:
+                out += f"  [GroupBy: {gb}]"
+
+            ob = self.details.get("order_by")
+            if ob:
+                dir_ = self.details.get("order_direction")
+                out += f"  [OrderBy: {ob}{(' ' + dir_) if dir_ else ''}]"
+
             out += "\n" + self._explain_table(self.details["table_source"], indent + 1)
         return out
 
@@ -97,6 +131,17 @@ def _values_to_executor_format(row: List[Any]) -> List[Tuple[str, Any]]:
             out.append(("string", str(v)))
     return out
 
+# ---- 解析聚合表达式（来自 parser 的 select_items 里是字符串 SQL 片段）----
+_agg_re = re.compile(r"^\s*(COUNT|SUM|AVG)\s*\(\s*(\*|[A-Za-z_][\w\.]*)\s*\)\s*$", re.I)
+
+def _parse_aggregate(expr: str, alias: Optional[str]) -> Optional[Dict[str, Any]]:
+    m = _agg_re.match(expr or "")
+    if not m:
+        return None
+    func = m.group(1).upper()
+    arg = m.group(2)
+    return {'func': func, 'arg': arg, 'alias': alias}
+
 # =========================================================
 # Planner
 # =========================================================
@@ -113,8 +158,20 @@ class Planner:
             current = {'type': 'Join','join_type': 'INNER','left': current,'right': right_ts,'condition': cond}
         return current
 
-    def _columns_from_select_items(self, items) -> List[str]:
-        return [i[0] if isinstance(i, tuple) else str(i) for i in items]
+    def _split_columns_and_aggregates(self, items) -> Tuple[List[str], List[Dict[str, Any]]]:
+        columns: List[str] = []
+        aggregates: List[Dict[str, Any]] = []
+        for expr, alias in (items or []):
+            expr_s = str(expr).strip()
+            agg = _parse_aggregate(expr_s, alias)
+            if agg:
+                aggregates.append(agg)
+            else:
+                if alias:
+                    columns.append(f"{expr_s} AS {alias}")
+                else:
+                    columns.append(expr_s)
+        return columns, aggregates
 
     # --- 谓词下推 ---
     def _predicate_pushdown(self, table_source: Dict[str, Any], condition: Optional[str]) -> Dict[str, Any]:
@@ -128,9 +185,11 @@ class Planner:
             left_col = cond['left']['value']
             target = table_source
             while target['type'] == 'Join':
-                if left_col.startswith(target['left'].get('alias') or target['left'].get('table_name')):
+                left_alias = target['left'].get('alias') or target['left'].get('table_name', '')
+                right_alias = target['right'].get('alias') or target['right'].get('table_name', '')
+                if left_col.startswith(left_alias + "."):
                     target = target['left']
-                elif left_col.startswith(target['right'].get('alias') or target['right'].get('table_name')):
+                elif left_col.startswith(right_alias + "."):
                     target = target['right']
                 else:
                     break
@@ -142,10 +201,19 @@ class Planner:
     def generate_plan(self, ast_node) -> ExecutionPlan:
         node_t = type(ast_node).__name__
 
+        # EXPLAIN
+        if node_t == "ExplainNode":
+            inner_plan = self.generate_plan(ast_node.inner)
+            return ExecutionPlan('Explain', {'inner_plan': inner_plan})
+
         # CREATE TABLE
         if node_t == "CreateTableNode":
             cols = [{'name': n, 'type': t} for (n, t) in ast_node.columns]
-            details = {'table_name': ast_node.table_name,'columns': cols,'constraints': []}
+            details = {
+                'table_name': ast_node.table_name,
+                'columns': cols,
+                'constraints': getattr(ast_node, 'constraints', []) or []
+            }
             return ExecutionPlan('CreateTable', details)
 
         # INSERT
@@ -178,17 +246,37 @@ class Planner:
 
         # SELECT
         if node_t == "SelectNode":
-            table_source = self._build_table_source(ast_node.from_table, getattr(ast_node,'from_alias',None), getattr(ast_node,'joins',[]) or [])
-            columns = self._columns_from_select_items(ast_node.select_items)
+            table_source = self._build_table_source(
+                ast_node.from_table,
+                getattr(ast_node,'from_alias',None),
+                getattr(ast_node,'joins',[]) or []
+            )
+            columns, aggregates = self._split_columns_and_aggregates(ast_node.select_items)
 
             # 优化前
-            raw = ExecutionPlan('Select', {'table_source': table_source,'columns': columns,'condition': ast_node.where_condition,'aggregates': []})
+            raw = ExecutionPlan('Select', {
+                'table_source': table_source,
+                'columns': columns,
+                'aggregates': aggregates,
+                'condition': ast_node.where_condition,
+                'group_by': getattr(ast_node, 'group_by', None),
+                'order_by': getattr(ast_node, 'order_by', None),
+                'order_direction': getattr(ast_node, 'order_direction', None),
+            })
             print("逻辑执行计划（优化前）:")
             print(raw.explain())
 
-            # 谓词下推
+            # 谓词下推（仅 WHERE）
             optimized_ts = self._predicate_pushdown(table_source, ast_node.where_condition)
-            opt = ExecutionPlan('Select', {'table_source': optimized_ts,'columns': columns,'condition': None,'aggregates': []})
+            opt = ExecutionPlan('Select', {
+                'table_source': optimized_ts,
+                'columns': columns,
+                'aggregates': aggregates,
+                'condition': None,  # 已尽可能下推
+                'group_by': getattr(ast_node, 'group_by', None),
+                'order_by': getattr(ast_node, 'order_by', None),
+                'order_direction': getattr(ast_node, 'order_direction', None),
+            })
             print("\n逻辑执行计划（谓词下推后）:")
             print(opt.explain())
             return opt

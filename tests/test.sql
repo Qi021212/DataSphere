@@ -92,3 +92,50 @@ SELECT s.id, c.name
 FROM student s
 JOIN class c ON s.id = c.sid
 WHERE s.age > 18 AND c.name = 'CS101' AND s.id = c.sid;
+
+
+-- 3.1 统计学生总数
+SELECT COUNT(*) FROM student;
+
+-- 3.2 求平均年龄
+SELECT AVG(age) FROM student;
+
+-- 3.3 按年龄分组统计人数
+SELECT age, COUNT(*) FROM student GROUP BY age ORDER BY age DESC;
+
+
+-- 外键测试 --
+
+-- 1. 创建部门表
+CREATE TABLE departments(
+    dept_id INT,
+    dept_name VARCHAR
+);
+
+-- 2. 创建员工表，带外键
+CREATE TABLE employees(
+    emp_id INT,
+    emp_name VARCHAR,
+    dept_id INT,
+    FOREIGN KEY (dept_id) REFERENCES departments(dept_id)
+);
+
+-- 3. 插入一行部门
+INSERT INTO departments(dept_id, dept_name)
+VALUES (1, 'HR');
+
+-- 4. 插入一行员工，dept_id = 1 外键存在 ✅
+INSERT INTO employees(emp_id, emp_name, dept_id)
+VALUES (101, 'Alice', 1);
+
+-- 5. 查询员工姓名，带条件
+SELECT emp_name FROM employees WHERE dept_id = 1;
+
+-- 错误用例 --
+-- 1. 插入员工，但 dept_id=99 在 departments 不存在
+INSERT INTO employees(emp_id, emp_name, dept_id)
+VALUES (102, 'Bob', 99);
+
+-- 2. 插入部门，列数与值数不一致
+INSERT INTO departments(dept_id, dept_name)
+VALUES (2);

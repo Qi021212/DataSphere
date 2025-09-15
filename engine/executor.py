@@ -1,7 +1,5 @@
-#数据库引擎 - 执行引擎
-
 # engine/executor.py
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 from storage.file_manager import FileManager
 from sql_compiler.planner import ExecutionPlan
@@ -9,153 +7,101 @@ from sql_compiler.catalog import Catalog
 from engine.storage_engine import StorageEngine
 
 
+# ---------------- 公用：条件求值 ----------------
 def _evaluate_condition(row: Dict[str, Any], condition: Dict[str, Any]) -> bool:
     """
-    更智能的条件求值：
-    - 支持 'a.b' 形式和裸列名；裸列名会在 row 里用 endswith('.col') 的方式唯一匹配
-    - 常量做类型感知：int/float/字符串；数字字符串会被自动转为数值再比较
-    - 对 join 后的 combined_row 生效，因为 combined_row 的键是 'alias.col'
+    支持：
+      - 'a.b' 与裸列名解析（JOIN 后的前缀键）
+      - 常量类型感知（int/float/str），字符串数字自动转数值参与 >/< 比较
+      - 操作符：=, >, <, >=, <=, !=, <>
     """
-
     def _looks_int(s: str) -> bool:
         try:
-            int(s)
-            return True
+            int(s); return True
         except Exception:
             return False
 
     def _looks_float(s: str) -> bool:
         try:
-            float(s)
-            return True
+            float(s); return True
         except Exception:
             return False
 
     def _strip_quotes_if_needed(s: Any) -> Any:
-        # 去掉 'xxx' 外围引号（如果有）
         if isinstance(s, str) and len(s) >= 2 and s[0] == "'" and s[-1] == "'":
             return s[1:-1]
         return s
 
     def _resolve_column_value(col_name: str, r: Dict[str, Any]):
-        """
-        解析列名优先级：
-        1) 直接命中（'s.age'）
-        2) 若带点，尝试后缀（'age'）
-        3) 裸列名：在 r 的键中唯一 endswith('.col') 的匹配
-        找不到 -> None
-        """
+        # 1) 精确命中
         if col_name in r:
             return r[col_name]
-
-        # 如果是带别名的 'a.b'，尝试用右半段再找一次
-        if '.' in col_name:
-            _, base = col_name.split('.', 1)
+        # 2) 若带点，尝试右半段
+        if "." in col_name:
+            _, base = col_name.split(".", 1)
             if base in r:
                 return r[base]
-
-        # 裸列名：在 'alias.col' 中按后缀唯一匹配
-        candidates = [v for k, v in r.items() if k.endswith('.' + col_name)]
+        # 3) 裸列：后缀唯一匹配
+        candidates = [v for k, v in r.items() if k.endswith("." + col_name)]
         if len(candidates) == 1:
             return candidates[0]
-
         return None
 
     def extract_value(expr: Dict[str, Any], r: Dict[str, Any]):
-        et = expr.get('type')
-        if et == 'column':
-            # 允许 'a.b' 或 'b'；上面 _resolve_column_value 会尽力找
-            col_name = expr.get('value')
-            return _resolve_column_value(col_name, r)
-        elif et == 'constant':
-            val = expr.get('value')
-            vtype = expr.get('value_type', '').lower()
-
-            # 去壳：'CS101' -> CS101
-            val = _strip_quotes_if_needed(val)
-
-            # 按声明类型/字面量尝试数值化
-            if vtype == 'int':
-                try:
-                    return int(val)
-                except Exception:
-                    return val
-            if vtype == 'float':
-                try:
-                    return float(val)
-                except Exception:
-                    return val
-            if vtype == 'string':
+        et = expr.get("type")
+        if et == "column":
+            return _resolve_column_value(expr.get("value"), r)
+        elif et == "constant":
+            val = _strip_quotes_if_needed(expr.get("value"))
+            vt = (expr.get("value_type") or "").lower()
+            if vt == "int":
+                try: return int(val)
+                except Exception: return val
+            if vt == "float":
+                try: return float(val)
+                except Exception: return val
+            if vt == "string":
                 return str(val)
-
-            # 未给类型：尝试猜测
+            # 未声明类型：猜测
             if isinstance(val, str):
-                if _looks_int(val):
-                    return int(val)
-                if _looks_float(val):
-                    return float(val)
-                return val
+                if _looks_int(val): return int(val)
+                if _looks_float(val): return float(val)
             return val
-        else:
-            # 兜底
-            return expr.get('value')
+        return expr.get("value")
 
-    left = condition.get('left', {})
-    operator = condition.get('operator')
-    right = condition.get('right', {})
+    if not condition:
+        return True
 
-    left_value = extract_value(left, row)
-    right_value = extract_value(right, row)
+    left = condition.get("left", {})
+    op = condition.get("operator")
+    right = condition.get("right", {})
+    lv = extract_value(left, row)
+    rv = extract_value(right, row)
 
-    # 若任一侧取不到值，判 False
-    if left_value is None or right_value is None:
+    if lv is None or rv is None:
         return False
 
-    # 若两侧都是字符串形式的数字，转换为数值比较（特别是 >/< 这类）
-    def _maybe_num(x):
-        if isinstance(x, (int, float)):
-            return x
-        if isinstance(x, str):
-            if _looks_int(x):
-                return int(x)
-            if _looks_float(x):
-                return float(x)
-        return x
-
-    lv = _maybe_num(left_value)
-    rv = _maybe_num(right_value)
+    # 尽量数值化，便于 >/<
+    if not isinstance(lv, (int, float)) and isinstance(lv, str):
+        if _looks_int(lv): lv = int(lv)
+        elif _looks_float(lv): lv = float(lv)
+    if not isinstance(rv, (int, float)) and isinstance(rv, str):
+        if _looks_int(rv): rv = int(rv)
+        elif _looks_float(rv): rv = float(rv)
 
     try:
-        if operator == '=':
-            return lv == rv
-        elif operator == '>':
-            # 仅当二者都可数值比较时才进行大小比较，否则按字符串比较
-            if isinstance(lv, (int, float)) and isinstance(rv, (int, float)):
-                return lv > rv
-            return str(lv) > str(rv)
-        elif operator == '<':
-            if isinstance(lv, (int, float)) and isinstance(rv, (int, float)):
-                return lv < rv
-            return str(lv) < str(rv)
-        elif operator == '>=':
-            if isinstance(lv, (int, float)) and isinstance(rv, (int, float)):
-                return lv >= rv
-            return str(lv) >= str(rv)
-        elif operator == '<=':
-            if isinstance(lv, (int, float)) and isinstance(rv, (int, float)):
-                return lv <= rv
-            return str(lv) <= str(rv)
-        elif operator in ('!=', '<>'):
-            return lv != rv
-        else:
-            # 未知操作符，保守返回 False
-            return False
+        if     op == "=":   return lv == rv
+        elif   op == ">":   return lv > rv if isinstance(lv,(int,float)) and isinstance(rv,(int,float)) else str(lv) > str(rv)
+        elif   op == "<":   return lv < rv if isinstance(lv,(int,float)) and isinstance(rv,(int,float)) else str(lv) < str(rv)
+        elif   op == ">=":  return lv >= rv if isinstance(lv,(int,float)) and isinstance(rv,(int,float)) else str(lv) >= str(rv)
+        elif   op == "<=":  return lv <= rv if isinstance(lv,(int,float)) and isinstance(rv,(int,float)) else str(lv) <= str(rv)
+        elif   op in ("!=", "<>"): return lv != rv
+        else: return False
     except Exception:
-        # 保守：比较失败即 False（不再输出 DEBUG）
         return False
 
 
-
+# ---------------- 执行器 ----------------
 class Executor:
     def __init__(self, file_manager: FileManager, catalog: Catalog):
         self.storage_engine = StorageEngine(file_manager)
@@ -163,329 +109,386 @@ class Executor:
         self.catalog = catalog
 
     def execute(self, plan: ExecutionPlan) -> Any:
-        if plan.plan_type == 'CreateTable':
+        if plan.plan_type == "Explain":
+            inner = plan.details.get("inner_plan")
+            return inner.explain() if isinstance(inner, ExecutionPlan) else "Explain: <empty>"
+        if plan.plan_type == "CreateTable":
             return self.execute_create_table(plan)
-        elif plan.plan_type == 'Insert':
+        if plan.plan_type == "Insert":
             return self.execute_insert(plan)
-        elif plan.plan_type == 'Select':
+        if plan.plan_type == "Select":
             return self.execute_select(plan)
-        elif plan.plan_type == 'Delete':
+        if plan.plan_type == "Delete":
             return self.execute_delete(plan)
-        elif plan.plan_type == 'Update':  # 👈 新增
+        if plan.plan_type == "Update":
             return self.execute_update(plan)
-        else:
-            raise Exception(f"Unsupported execution plan: {plan.plan_type}")
+        raise Exception(f"Unsupported execution plan: {plan.plan_type}")
 
+    # ---------- DDL/DML ----------
     def execute_create_table(self, plan: ExecutionPlan) -> str:
-        table_name = plan.details['table_name']
-        columns = plan.details['columns']
-        constraints = plan.details.get('constraints', [])  # 👈 获取约束
-        # 调用存储引擎创建表
+        table_name = plan.details["table_name"]
+        columns = plan.details["columns"]
+        constraints = plan.details.get("constraints", [])
+        # 创建物理文件
         self.file_manager.create_table_file(table_name, columns)
-        # 更新目录，并保存约束
-        # 👇 关键：调用修改后的 create_table 方法
-        if hasattr(self.catalog, 'create_table') and len(self.catalog.create_table.__code__.co_varnames) > 2:
+        # 写 catalog（兼容老签名）
+        if hasattr(self.catalog, "create_table") and len(self.catalog.create_table.__code__.co_varnames) > 2:
             self.catalog.create_table(table_name, columns, constraints)
         else:
-            # 兼容旧的 create_table 方法
             self.catalog.create_table(table_name, columns)
-            # 手动添加约束
             if constraints:
                 table_info = self.catalog.get_table_info(table_name)
-                table_info['constraints'] = constraints
+                table_info["constraints"] = constraints
                 self.catalog._save_catalog()
         return f"Table '{table_name}' created successfully"
 
     def execute_insert(self, plan: ExecutionPlan) -> str:
-        table_name = plan.details['table_name']
-        column_names = plan.details['column_names']
-        values = plan.details['values']
+        table_name = plan.details["table_name"]
+        column_names = plan.details["column_names"]
+        values = plan.details["values"]
+
         table_info = self.catalog.get_table_info(table_name)
         if not table_info:
             raise Exception(f"Table '{table_name}' does not exist")
         if not column_names:
-            column_names = [col['name'] for col in table_info['columns']]
+            column_names = [col["name"] for col in table_info["columns"]]
 
-        # 构建记录字典
+        # 构建记录
         record = {}
         for i, col_name in enumerate(column_names):
-            value_info = values[i]
-            value_type, value = value_info
+            _, value = values[i]
             record[col_name] = value
 
-        # 👇 关键新增：外键检查
-        table_info = self.catalog.get_table_info(table_name)  # 确保获取最新信息
+        # 外键检查（带智能提示）
         for col_name, value in record.items():
-            for constraint in table_info.get('constraints', []):
-                if constraint[0] == 'FOREIGN_KEY' and constraint[1] == col_name:
+            for constraint in table_info.get("constraints", []):
+                if constraint and constraint[0] == "FOREIGN_KEY" and constraint[1] == col_name:
                     _, _, ref_table, ref_col = constraint
                     if not self._check_reference_exists(ref_table, ref_col, value):
-                        raise Exception(f"❌ 外键约束失败：{col_name}={value} 在 {ref_table}({ref_col}) 中不存在")
+                        # —— 智能提示：列出现有候选值 & 修复示例 ——
+                        try:
+                            existing_rows = self.file_manager.read_records(ref_table)
+                            vals = []
+                            for r in existing_rows:
+                                if ref_col in r:
+                                    vals.append(r[ref_col])
+                            uniq_vals = sorted(set(vals))[:10]
+                            candidates = ", ".join(map(lambda x: repr(x), uniq_vals)) if uniq_vals else "(无现有记录)"
+                        except Exception:
+                            candidates = "(无法读取引用表候选值)"
 
-        # --- 核心修改：调用FileManager真正插入记录 ---
-        success = self.file_manager.insert_record(table_name, record)
-        if not success:
+                        full_cols = column_names or [c["name"] for c in table_info["columns"]]
+                        full_vals = [repr(record[c]) for c in full_cols]
+
+                        # 用现有候选里第一个给出“改用现有键”的示例（若没有候选就保留原值）
+                        fallback = repr(uniq_vals[0]) if uniq_vals else repr(value)
+                        patched_vals = [
+                            (fallback if c == col_name else v)
+                            for c, v in zip(full_cols, full_vals)
+                        ]
+
+                        msg = (
+                            f"智能提示：外键约束失败 —— {table_name}.{col_name}={repr(value)} "
+                            f"在 {ref_table}({ref_col}) 中不存在。\n"
+                            f"可选修复：\n"
+                            f"  方案 A：先向父表插入该键值，再插入当前记录：\n"
+                            f"    INSERT INTO {ref_table}({ref_col}/*, 其他列 */) VALUES ({repr(value)}/*, ... */);\n"
+                            f"    INSERT INTO {table_name}({', '.join(full_cols)}) VALUES ({', '.join(full_vals)});\n"
+                            f"  方案 B：改用父表中已存在的键（候选前若干：{candidates}）：\n"
+                            f"    INSERT INTO {table_name}({', '.join(full_cols)}) VALUES ({', '.join(patched_vals)});"
+                        )
+                        raise Exception(msg)
+
+        ok = self.file_manager.insert_record(table_name, record)
+        if not ok:
             raise Exception("Failed to insert record")
-        # 更新目录中的记录数
-        current_count = table_info['row_count']
-        self.catalog.update_row_count(table_name, current_count + 1)
+        self.catalog.update_row_count(table_name, self.catalog.get_table_info(table_name)["row_count"] + 1)
         self.file_manager.flush_all()
         return f"1 row inserted into '{table_name}'"
 
-    def execute_select(self, plan: ExecutionPlan) -> List[Dict[str, Any]]:
-        # 获取必要信息
-        table_source_plan = plan.details['table_source']
-        columns = plan.details['columns']
-        condition = plan.details.get('condition')  # SELECT 的 WHERE 条件
-        aggregates = plan.details.get('aggregates', [])  # 获取聚合函数信息
-
-        # 执行表源计划，获取原始数据
-        if table_source_plan['type'] == 'TableScan':
-            table_name = table_source_plan['table_name']
-            table_info = self.catalog.get_table_info(table_name)
-            if not table_info:
-                raise Exception(f"Table '{table_name}' does not exist")
-            raw_results = self.file_manager.read_records(table_name)
-        elif table_source_plan['type'] == 'Join':
-            raw_results = self._execute_join(table_source_plan)
-        else:
-            raise Exception(f"Unsupported table source type: {table_source_plan['type']}")
-
-        # 应用 SELECT 语句的 WHERE 条件
-        if condition:
-            filtered_raw_results = []
-            for row in raw_results:
-                if _evaluate_condition(row, condition):
-                    filtered_raw_results.append(row)
-            raw_results = filtered_raw_results
-
-        # 处理聚合函数
-        if aggregates:
-            result_row = {}
-            for agg in aggregates:
-                func_name = agg['function']
-                col_name = agg['column']
-                values = []
-                for row in raw_results:  # 现在 raw_results 已经过 WHERE 过滤
-                    if col_name == '*':
-                        values.append(1)
-                    else:
-                        value = row.get(col_name)
-                        if value is not None:
-                            if func_name in ['SUM', 'AVG']:
-                                try:
-                                    value = float(value)
-                                    values.append(value)
-                                except ValueError:
-                                    pass
-                            else:
-                                values.append(value)
-                if func_name == 'COUNT':
-                    result = len(values)
-                elif func_name == 'SUM':
-                    result = sum(values) if values else 0
-                elif func_name == 'AVG':
-                    result = sum(values) / len(values) if values else 0
-                else:
-                    raise Exception(f"Unsupported aggregate function: {func_name}")
-                column_alias = f"{func_name}({col_name})"
-                result_row[column_alias] = result
-            return [result_row]
-
-        # 处理普通列选择
-        selected_results = []
-        for row in raw_results:  # 此时的 raw_results 已经过 WHERE 过滤
-            selected_row = {}
-            for col in columns:
-                if col == '*':
-                    selected_row = row.copy()
-                    break
-                else:
-                    if col in row:
-                        selected_row[col] = row[col]
-                    else:
-                        selected_row[col] = None
-            selected_results.append(selected_row)
-
-        return selected_results
-
-    # 👇 新增核心方法：执行表源计划
-    def _execute_table_source(self, ts_plan: Dict) -> List[Dict[str, Any]]:
-        """执行表源计划"""
-        if ts_plan['type'] == 'TableScan':
-            table_name = ts_plan['table_name']
-            # 直接从文件管理器读取所有记录
-            return self.file_manager.read_records(table_name)
-        elif ts_plan['type'] == 'Join':
-            return self._execute_join(ts_plan)
-        else:
-            raise Exception(f"Unsupported table source plan type: {ts_plan['type']}")
-
     def execute_delete(self, plan: ExecutionPlan) -> str:
-        table_name = plan.details['table_name']
-        condition = plan.details['condition']
-
-        # 获取表信息
+        table_name = plan.details["table_name"]
+        condition = plan.details["condition"]
         table_info = self.catalog.get_table_info(table_name)
         if not table_info:
             raise Exception(f"Table '{table_name}' does not exist")
-
-        # 调用 FileManager 删除记录
-        deleted_count = self.file_manager.delete_records(table_name, condition)
-
-        # 更新目录中的记录数
-        current_count = table_info['row_count']
-        self.catalog.update_row_count(table_name, max(0, current_count - deleted_count))
-
-        return f"{deleted_count} row(s) deleted from '{table_name}'"
+        deleted = self.file_manager.delete_records(table_name, condition)
+        self.catalog.update_row_count(table_name, max(0, table_info["row_count"] - deleted))
+        return f"{deleted} row(s) deleted from '{table_name}'"
 
     def execute_update(self, plan: ExecutionPlan) -> str:
-        """执行 UPDATE 语句"""
-        table_name = plan.details['table_name']
-        set_clause = plan.details['set_clause']  # [(col, value_dict), ...]
-        condition = plan.details['condition']
+        table_name = plan.details["table_name"]
+        set_clause = plan.details["set_clause"]      # [(col, {'type':'constant','value_type':...,'value':...}), ...]
+        condition = plan.details["condition"]
 
-        # 获取表信息
         table_info = self.catalog.get_table_info(table_name)
         if not table_info:
             raise Exception(f"Table '{table_name}' does not exist")
 
-        # 👇 关键修复：正确提取值并进行类型转换
-        typed_set_clause = []
+        # 列类型驱动的转换
+        typed_set_clause: List[Tuple[str, Any]] = []
+        name2type = {c["name"]: c["type"] for c in table_info["columns"]}
         for col_name, value_dict in set_clause:
-            # 找到该列的类型
-            col_type = next((col['type'] for col in table_info['columns'] if col['name'] == col_name), None)
-            if col_type is None:
+            if col_name not in name2type:
                 raise Exception(f"Column '{col_name}' does not exist in table '{table_name}'")
-            # 从字典中提取实际的值字符串
-            str_value = value_dict['value']  # 👈 关键：先提取 'value'
-            # 根据类型转换值
-            if col_type == 'INT':
-                typed_value = int(str_value)  # 将字符串转为整数
-            elif col_type == 'FLOAT':
-                typed_value = float(str_value)
-            else:  # VARCHAR 或其他类型，保持为字符串
-                typed_value = str_value
-            typed_set_clause.append((col_name, typed_value))
+            typ = name2type[col_name]
+            val = value_dict["value"]
+            if typ == "INT":
+                val = int(val)
+            elif typ == "FLOAT":
+                val = float(val)
+            else:
+                val = str(val)
+            typed_set_clause.append((col_name, val))
 
-        # 👇 关键修复：同样，对 WHERE 条件中的值进行类型转换
         typed_condition = condition
         if condition:
-            # 假设 condition 结构为 {'left': {...}, 'operator': '...', 'right': {...}}
-            right_value_dict = condition['right']
-            right_value_str = right_value_dict['value']  # 👈 关键：先提取 'value'
-            # 更可靠的方式：根据列名查找实际类型
-            col_name = condition['left']['value']
-            col_actual_type = next((col['type'] for col in table_info['columns'] if col['name'] == col_name), None)
-            if col_actual_type == 'INT':
-                typed_condition['right']['value'] = int(right_value_str)
-            elif col_actual_type == 'FLOAT':
-                typed_condition['right']['value'] = float(right_value_str)
-            # 对于 VARCHAR，保持字符串，无需转换
+            left_col = condition["left"]["value"]
+            r_val = condition["right"]["value"]
+            col_typ = name2type.get(left_col)
+            if col_typ == "INT":
+                typed_condition["right"]["value"] = int(r_val)
+            elif col_typ == "FLOAT":
+                typed_condition["right"]["value"] = float(r_val)
 
-        # 调用 FileManager 执行更新 (传入已转换类型的值)
-        updated_count = self.file_manager.update_records(table_name, typed_set_clause, typed_condition)
+        updated = self.file_manager.update_records(table_name, typed_set_clause, typed_condition)
 
-        # 👇 关键新增：级联更新逻辑
-        if updated_count > 0 and condition:
-            # 获取 WHERE 条件，我们假设它用于定位被更新的旧值
-            where_col, where_op, where_value_str = condition['left']['value'], condition['operator'], condition['right']['value']
-            # 我们只处理 `=` 操作符的简单情况
-            if where_op == '=':
-                old_value = where_value_str
-                # 检查被更新的列是否是其他表的外键目标
-                for set_col, new_value in set_clause: # 这里用原始的 set_clause，因为 new_value 用于构造新语句
-                    if set_col == where_col:
-                        referencing_tables = self.catalog.find_referencing_tables(table_name, set_col)
-                        for ref_table_name, ref_col_name in referencing_tables:
-                            # 构造级联更新的执行计划
-                            cascade_plan = ExecutionPlan('Update', {
-                                'table_name': ref_table_name,
-                                'set_clause': [(ref_col_name, new_value)], # new_value 是字符串，符合 ExecutionPlan 期望
-                                'condition': {
-                                    'left': {'type': 'column', 'value': ref_col_name},
-                                    'operator': '=',
-                                    'right': {'type': 'constant', 'value_type': 'string', 'value': old_value}
-                                }
-                            })
-                            # 递归调用 execute_update 来执行级联更新
-                            cascade_result = self.execute_update(cascade_plan)
+        # 简单级联（只在 WHERE 为等值时）
+        if updated > 0 and condition and condition.get("operator") == "=":
+            where_col = condition["left"]["value"]
+            old_value = condition["right"]["value"]
+            for set_col, new_value_dict in set_clause:
+                if set_col == where_col:
+                    refs = self.catalog.find_referencing_tables(table_name, set_col)
+                    for ref_table, ref_col in refs:
+                        cascade_plan = ExecutionPlan("Update", {
+                            "table_name": ref_table,
+                            "set_clause": [(ref_col, new_value_dict)],
+                            "condition": {
+                                "left": {"type": "column", "value": ref_col},
+                                "operator": "=",
+                                "right": {"type": "constant", "value_type": "string", "value": old_value},
+                            }
+                        })
+                        self.execute_update(cascade_plan)
 
-        return f"Updated {updated_count} row(s)"
+        return f"Updated {updated} row(s)"
 
+    # ---------- SELECT ----------
+    def execute_select(self, plan: ExecutionPlan) -> List[Dict[str, Any]]:
+        ts_plan = plan.details["table_source"]
+        columns: List[str] = plan.details.get("columns") or []
+        aggregates: List[Dict[str, Any]] = plan.details.get("aggregates") or []
+        group_by: Optional[str] = plan.details.get("group_by")
+        order_by: Optional[str] = plan.details.get("order_by")
+        order_dir: Optional[str] = plan.details.get("order_direction")
+
+        # 1) 执行表源（包含谓词下推）
+        raw = self._execute_table_source(ts_plan)
+
+        # 2) 残余 WHERE 过滤（非常重要）
+        residual = plan.details.get("condition")
+        if residual:
+            raw = [r for r in raw if _evaluate_condition(r, residual)]
+
+        # 3) 聚合 or 普通投影/排序
+        if aggregates:
+            return self._execute_aggregates(raw, aggregates, group_by, order_by, order_dir)
+
+        rows = [self._project_row(row, columns) for row in raw]
+        if order_by:
+            rows = self._order_rows(rows, order_by, order_dir)
+        return rows
+
+    # ---------- 内部：表源执行 with 谓词下推 ----------
+    def _execute_table_source(self, ts_plan: Dict) -> List[Dict[str, Any]]:
+        t = ts_plan["type"]
+        if t == "TableScan":
+            table = ts_plan["table_name"]
+            alias = ts_plan.get("alias")
+            cond = ts_plan.get("condition")  # 谓词下推
+            base_rows = self.file_manager.read_records(table, cond) if cond else self.file_manager.read_records(table)
+
+            # 无论是否有别名，都生成“带前缀键”（别名或表名）+ “裸键”
+            prefix = (alias or table)
+            out = []
+            for r in base_rows:
+                nr = {}
+                for k, v in r.items():
+                    nr[k] = v                       # 裸列
+                    nr[f"{prefix}.{k}"] = v         # 前缀列
+                out.append(nr)
+            return out
+
+        if t == "Join":
+            return self._execute_join(ts_plan)
+
+        raise Exception(f"Unsupported table source type: {t}")
+
+    def _execute_join(self, join_plan: Dict) -> List[Dict[str, Any]]:
+        join_type = join_plan["join_type"]
+        left_plan = join_plan["left"]
+        right_plan = join_plan["right"]
+        join_condition = join_plan["condition"]
+
+        left_rows = self._execute_table_source(left_plan)
+        right_rows = self._execute_table_source(right_plan)
+
+        results: List[Dict[str, Any]] = []
+
+        if join_type == "INNER":
+            for l in left_rows:
+                for r in right_rows:
+                    combined = {**l, **r}
+                    if _evaluate_condition(combined, join_condition):
+                        results.append(combined)
+            return results
+
+        if join_type == "LEFT":
+            # 尝试确定需要补全的右表列（考虑右表为空的情况）
+            right_cols = set(right_rows[0].keys()) if right_rows else set()
+            if not right_cols and right_plan["type"] == "TableScan":
+                rt = right_plan["table_name"]
+                rp = right_plan.get("alias") or rt
+                meta = self.catalog.get_table_info(rt) or {"columns": []}
+                right_cols = {f"{rp}.{c['name']}" for c in meta["columns"]} | {c['name'] for c in meta["columns"]}
+
+            for l in left_rows:
+                matched = False
+                for r in right_rows:
+                    combined = {**l, **r}
+                    if _evaluate_condition(combined, join_condition):
+                        results.append(combined)
+                        matched = True
+                if not matched:
+                    combined = dict(l)
+                    for c in right_cols:
+                        combined.setdefault(c, None)
+                    results.append(combined)
+            return results
+
+        raise Exception(f"Unsupported join type: {join_type}")
+
+    # ---------- 内部：聚合/分组/排序/投影 ----------
+    def _resolve_col_from_row(self, row: Dict[str, Any], col: str):
+        if col in row:
+            return row[col]
+        if "." in col:
+            _, base = col.split(".", 1)
+            if base in row:
+                return row[base]
+        hits = [v for k, v in row.items() if k.endswith("." + col)]
+        if len(hits) == 1:
+            return hits[0]
+        return None
+
+    def _execute_aggregates(self,
+                            rows: List[Dict[str, Any]],
+                            aggregates: List[Dict[str, Any]],
+                            group_by: Optional[str],
+                            order_by: Optional[str],
+                            order_dir: Optional[str]) -> List[Dict[str, Any]]:
+        # 规范化聚合项：{'func','arg','alias'}
+        aggs = [{"func": a.get("func").upper(),
+                 "arg": a.get("arg"),
+                 "alias": a.get("alias")} for a in aggregates]
+
+        if group_by:
+            # 分组键（单列）
+            groups: Dict[Any, List[Dict[str, Any]]] = {}
+            for row in rows:
+                key = self._resolve_col_from_row(row, group_by)
+                groups.setdefault(key, []).append(row)
+
+            out: List[Dict[str, Any]] = []
+            for gkey, bucket in groups.items():
+                one = {}
+                one[group_by] = gkey  # 输出分组列，以 group_by 原样为键
+                for a in aggs:
+                    val = self._agg_bucket(bucket, a["func"], a["arg"])
+                    out_key = a["alias"] or f"{a['func']}({a['arg']})"
+                    one[out_key] = val
+                out.append(one)
+
+            if order_by:
+                out = self._order_rows(out, order_by, order_dir)
+            return out
+
+        # 无分组：全表聚合 -> 单行
+        res: Dict[str, Any] = {}
+        for a in aggs:
+            val = self._agg_bucket(rows, a["func"], a["arg"])
+            out_key = a["alias"] or f"{a['func']}({a['arg']})"
+            res[out_key] = val
+        return [res]
+
+    def _agg_bucket(self, bucket: List[Dict[str, Any]], func: str, arg: str) -> Any:
+        if func == "COUNT" and arg == "*":
+            return len(bucket)
+        vals: List[float] = []
+        for row in bucket:
+            v = self._resolve_col_from_row(row, arg)
+            if v is None:
+                continue
+            if func in ("SUM", "AVG"):
+                try:
+                    v = float(v)
+                except Exception:
+                    continue
+            vals.append(v)
+        if func == "COUNT":
+            return len(vals)
+        if func == "SUM":
+            return sum(vals) if vals else 0
+        if func == "AVG":
+            return (sum(vals) / len(vals)) if vals else 0
+        raise Exception(f"Unsupported aggregate function: {func}")
+
+    def _parse_select_column_item(self, item: str) -> Tuple[str, Optional[str]]:
+        """
+        解析 SELECT 列形态为 (expr, alias)：
+          "col"
+          "t.col"
+          "expr AS alias"（AS 不区分大小写）
+        """
+        s = item.strip()
+        parts = s.split()
+        if len(parts) >= 3 and parts[-2].upper() == "AS":
+            alias = parts[-1]
+            expr = " ".join(parts[:-2])
+            return expr, alias
+        return s, None
+
+    def _project_row(self, row: Dict[str, Any], columns: List[str]) -> Dict[str, Any]:
+        if not columns or columns == ["*"]:
+            return dict(row)
+        out: Dict[str, Any] = {}
+        for col_item in columns:
+            if col_item == "*":
+                out.update(row)
+                continue
+            expr, alias = self._parse_select_column_item(col_item)
+            val = self._resolve_col_from_row(row, expr)
+            out[alias or expr] = val
+        return out
+
+    def _order_rows(self, rows: List[Dict[str, Any]], key_name: str, direction: Optional[str]) -> List[Dict[str, Any]]:
+        rev = (isinstance(direction, str) and direction.upper() == "DESC")
+        # 缺值放后
+        def _key(r):
+            v = r.get(key_name)
+            return (1, None) if v is None else (0, v)
+        return sorted(rows, key=_key, reverse=rev)
+
+    # ---------- 其他 ----------
     def _check_reference_exists(self, table_name, column_name, value):
-        """检查引用表中是否存在该值"""
         table_info = self.catalog.get_table_info(table_name)
         if not table_info:
             return False
-
-        # 构造查询条件
-        condition = {
-            'left': {'type': 'column', 'value': column_name},
-            'operator': '=',
-            'right': {'type': 'constant', 'value_type': 'string', 'value': str(value)}
+        cond = {
+            "left":  {"type": "column", "value": column_name},
+            "operator": "=",
+            "right": {"type": "constant", "value_type": "string", "value": str(value)}
         }
-
-        # 使用 FileManager 读取记录
-        records = self.file_manager.read_records(table_name, condition)
+        records = self.file_manager.read_records(table_name, cond)
         return len(records) > 0
-
-    def _execute_join(self, join_plan: Dict) -> List[Dict[str, Any]]:
-        """执行 JOIN 操作"""
-        join_type = join_plan['join_type']
-        left_plan = join_plan['left']
-        right_plan = join_plan['right']
-        join_condition = join_plan['condition']
-
-        # 递归执行左表和右表
-        left_results = self._execute_table_source(left_plan)
-        right_results = self._execute_table_source(right_plan)
-
-        joined_results = []
-
-        if join_type == 'INNER':
-            for left_row in left_results:
-                for right_row in right_results:
-                    # 创建一个合并的行，为列名添加表别名前缀以避免冲突
-                    combined_row = {}
-                    # 为左表的每一列添加别名前缀
-                    for col_name, value in left_row.items():
-                        prefixed_name = f"{left_plan.get('alias', left_plan['table_name'])}.{col_name}"
-                        combined_row[prefixed_name] = value
-                    # 为右表的每一列添加别名前缀
-                    for col_name, value in right_row.items():
-                        prefixed_name = f"{right_plan.get('alias', right_plan['table_name'])}.{col_name}"
-                        combined_row[prefixed_name] = value
-                    # 评估连接条件
-                    if _evaluate_condition(combined_row, join_condition):
-                        joined_results.append(combined_row)
-        elif join_type == 'LEFT':
-            for left_row in left_results:
-                match_found = False
-                for right_row in right_results:
-                    # 创建一个合并的行，为列名添加表别名前缀以避免冲突
-                    combined_row = {}
-                    # 为左表的每一列添加别名前缀
-                    for col_name, value in left_row.items():
-                        prefixed_name = f"{left_plan.get('alias', left_plan['table_name'])}.{col_name}"
-                        combined_row[prefixed_name] = value
-                    # 为右表的每一列添加别名前缀
-                    for col_name, value in right_row.items():
-                        prefixed_name = f"{right_plan.get('alias', right_plan['table_name'])}.{col_name}"
-                        combined_row[prefixed_name] = value
-                    # 评估连接条件
-                    if _evaluate_condition(combined_row, join_condition):
-                        joined_results.append(combined_row)
-                        match_found = True
-                if not match_found:
-                    # 左连接：左表行保留，右表列填充 NULL
-                    # 为右表的每一列生成 NULL 值，并添加前缀
-                    for col_name in right_results[0].keys() if right_results else []:
-                        prefixed_name = f"{right_plan.get('alias', right_plan['table_name'])}.{col_name}"
-                        combined_row[prefixed_name] = None
-                    # 左表的列已经添加了前缀，在上面的循环中
-                    joined_results.append(combined_row)
-        else:
-            raise Exception(f"Unsupported join type: {join_type}")
-
-        return joined_results

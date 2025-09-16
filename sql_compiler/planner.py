@@ -212,15 +212,22 @@ class Planner:
             details = {
                 'table_name': ast_node.table_name,
                 'columns': cols,
+                'primary_key': getattr(ast_node, 'primary_key', None),
                 'constraints': getattr(ast_node, 'constraints', []) or []
             }
             return ExecutionPlan('CreateTable', details)
 
-        # INSERT
+        # INSERT（支持多行）
         if node_t == "InsertNode":
-            row = ast_node.values[0] if ast_node.values else []
-            values_for_exec = _values_to_executor_format(row)
-            details = {'table_name': ast_node.table_name,'column_names': ast_node.column_names or [],'values': values_for_exec}
+            all_rows = ast_node.values or []
+            values_for_exec: List[List[Tuple[str, Any]]] = [
+                _values_to_executor_format(row) for row in all_rows
+            ]
+            details = {
+                'table_name': ast_node.table_name,
+                'column_names': ast_node.column_names or [],
+                'values': values_for_exec  # 二维：每行若干 (type, value)
+            }
             return ExecutionPlan('Insert', details)
 
         # DELETE

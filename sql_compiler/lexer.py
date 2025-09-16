@@ -49,8 +49,9 @@ class Lexer:
         # 逻辑 / 排序
         'AND', 'OR', 'NOT', 'ASC', 'DESC',
 
-        # 约束（外键）
-        'FOREIGN', 'KEY', 'REFERENCES',
+        # 约束（含主键/外键/唯一/默认/可空）
+        'PRIMARY', 'KEY', 'FOREIGN', 'REFERENCES',
+        'UNIQUE', 'NULL', 'DEFAULT', 'CONSTRAINT',
 
         # 聚合/函数名（作为关键字识别便于 LL(1) 调试与简单解析）
         'COUNT', 'SUM', 'AVG',

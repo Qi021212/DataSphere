@@ -5,13 +5,19 @@ from io import StringIO
 from datetime import datetime
 from contextlib import redirect_stdout
 
+# >>> 修改：增加 logging，默认屏蔽 DEBUG
+import logging
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+logging.getLogger("storage.buffer").setLevel(logging.WARNING)
+logging.getLogger("storage").setLevel(logging.WARNING)
+
 # 让 cli/.. 成为 import 根
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from utils.helpers import format_output
 from sql_compiler.lexer import Lexer
 from sql_compiler.parser import Parser
-from sql_compiler.semantic_analyzer import SemanticAnalyzer
+from sql_compiler.semantic import SemanticAnalyzer
 from sql_compiler.catalog import Catalog
 from sql_compiler.planner import Planner
 from storage.file_manager import FileManager
@@ -53,13 +59,44 @@ def _clean_statement_for_lex(statement: str) -> str:
 def _extract_smart_hints(msg: str):
     return [line.strip() for line in (msg or "").splitlines() if line.strip().startswith("智能提示：")]
 
+### NEW: 将一段包含多条 SQL 的文本切成“带分号的”语句（忽略字符串内的分号）
+def _iter_sql_statements(text: str):
+    buf, in_str, escape = [], False, False
+    for ch in text:
+        buf.append(ch)
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == "'":
+                in_str = False
+            continue
+        else:
+            if ch == "'":
+                in_str = True
+                continue
+            if ch == ";":
+                stmt = "".join(buf).strip()
+                if stmt:
+                    yield stmt
+                buf.clear()
+    # 允许文件末尾最后一条语句没有分号时忽略；如需严格要求，可在此处判断
+    tail = "".join(buf).strip()
+    if tail.endswith(";"):
+        yield tail
+
 
 class DatabaseCLI:
     def __init__(self):
         # —— 只实例化一次 Catalog（其内部若文件不存在会打印一次提示）
-        self.catalog = Catalog()
-        self.file_manager = FileManager()
-        self.executor = Executor(self.file_manager, self.catalog)
+        # >>> 修改：静默初始化，避免 Catalog 内部的 print 弹到终端
+        _silent = StringIO()
+        with redirect_stdout(_silent):
+            self.catalog = Catalog()
+            self.file_manager = FileManager()
+            self.executor = Executor(self.file_manager, self.catalog)
+
         self.semantic_analyzer = SemanticAnalyzer(self.catalog)
         self.planner = Planner()
 
@@ -67,6 +104,9 @@ class DatabaseCLI:
         self._log_lines = []
         self._success_cnt = 0
         self._total_cnt = 0
+
+        # >>> 修改：是否在终端展示“优化讲解（谓词下推）”
+        self._show_optimize_to_console = False
 
     # ============== 详细编译日志 +（可选）执行 ==============
     def process_and_log(self, sql_with_semicolon: str, actually_execute: bool = True):
@@ -145,50 +185,57 @@ class DatabaseCLI:
                 pass
             self._log_lines.append("逻辑执行计划: " + (desc or repr(plan)))
 
-            # === 如果有优化讲解（例如谓词下推前后对比），写入日志，并可选在控制台打印 ===
+            # === 优化讲解：仅写入日志；不在终端打印 ===
             explain_text = getattr(plan, "explain", None) if hasattr(plan, "explain") else None
             if isinstance(explain_text, str) and explain_text.strip():
-                # 日志里：前面加一个空行，再加区块标题
                 self._log_lines.append("")
                 self._log_lines.append("—— 优化讲解（谓词下推） ——")
                 self._log_lines.append(explain_text)
+                if self._show_optimize_to_console:
+                    print()
+                    print("—— 优化讲解（谓词下推） ——")
+                    print(explain_text)
 
-                # 控制台：也输出一个简版，便于交互立即看到
-                # 如果不想在终端打印这段，把下面三行注释掉即可
-                print()
-                print("—— 优化讲解（谓词下推） ——")
-                print(explain_text)
-
-            # === 实际执行并回显 ===
+            # === 实际执行并回显（只输出成功信息/结果，不输出 DEBUG）===
             if actually_execute:
-                result = self.executor.execute(plan)
-                # 控制台显示
+                with redirect_stdout(StringIO()):
+                    result = self.executor.execute(plan)
+
                 if isinstance(result, str):
                     print(result)
                 elif isinstance(result, list):
                     print(format_output(result) if result else "No results returned.")
-                # 成功统计（执行到这里无异常即可算成功）
                 self._success_cnt += 1
 
             return True
 
         except Exception as e:
-            # 把 parser/semantic/plan 的打印先写入日志
             prints = sink.getvalue()
             if prints:
                 self._log_lines.append(prints)
             self._log_lines.append(str(e))
-
-            # 仅把“智能提示：...”行即时输出
             for h in _extract_smart_hints(str(e)):
                 print(h)
             return None
+
+    ### NEW: 批处理一个 .sql 文件（逐条语句执行 + 写入详细日志）
+    def process_file(self, path: str):
+        if not os.path.exists(path):
+            print(f"[错误] 文件不存在: {path}")
+            return
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+        # 逐条语句（保留分号）送入编译执行
+        for stmt in _iter_sql_statements(text):
+            self.process_and_log(stmt, actually_execute=True)
 
     # ============== 交互 ==============
     def _read_stmt(self, prompt="SQL> "):
         """
         交互输入：支持多行；读到“分号（字符串外）”结束，返回**包含分号**的完整语句。
         'quit' / 'exit'（带不带分号）直接返回控制命令。
+        额外命令：
+          :read <path> / :r <path>   从文件批量读取并执行
         """
         buf, in_str = [], False
         while True:
@@ -199,6 +246,16 @@ class DatabaseCLI:
 
             raw = line.strip()
             low = raw.lower()
+
+            # 文件读取命令（仅在“语句开始”时有效）
+            if not buf and (low.startswith(":read ") or low.startswith(":r ")):
+                _, _, path = raw.partition(" ")
+                path = path.strip()
+                if path:
+                    self.process_file(path)
+                # 文件处理后继续下一轮读取
+                return ""
+
             if not buf and low in ("quit", "quit;", "exit", "exit;"):
                 return "__EXIT__"
 
@@ -208,16 +265,27 @@ class DatabaseCLI:
             while i < len(text):
                 ch = text[i]
                 if ch == ";" and not in_str:
-                    # 返回截至分号为止（包含分号）
                     return text[: i + 1].strip()
                 if ch == "'" and (i == 0 or text[i - 1] != "\\"):
                     in_str = not in_str
                 i += 1
-            # 否则继续读下一行
 
     def run(self):
+        # === NEW: 若通过命令行参数传入 .sql 文件，先运行该文件后直接退出 ===
+        if len(sys.argv) >= 2 and sys.argv[1].lower().endswith(".sql"):
+            self.process_file(sys.argv[1])
+            # 退出时落盘日志 + 汇总统计
+            with open(LOG_FILE, "w", encoding="utf-8") as f:
+                f.write("=== 详细编译日志（本次会话） ===\n")
+                f.write("\n".join(self._log_lines))
+            print(f"✅ 成功处理 {self._success_cnt} / {self._total_cnt} 条 SQL 语句！")
+            print("🎉 SQL 编译器执行完成！详细编译日志已保存到：")
+            print(LOG_FILE)
+            return
+
         print("Welcome to SimpleDB CLI")
         print("多行输入；以 ';' 结束一条语句。输入 quit/exit 退出。")
+        print("额外命令：:read <path>  或  :r <path>  —— 从文件读取并执行 SQL 脚本。")
 
         while True:
             stmt = self._read_stmt()
@@ -225,10 +293,8 @@ class DatabaseCLI:
                 break
             if not stmt.strip():
                 continue
-            # 交互模式：既要执行，也要写入详细日志
             self.process_and_log(stmt, actually_execute=True)
 
-        # 退出时落盘日志 + 汇总统计
         with open(LOG_FILE, "w", encoding="utf-8") as f:
             f.write("=== 详细编译日志（本次会话） ===\n")
             f.write("\n".join(self._log_lines))

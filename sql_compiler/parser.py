@@ -25,12 +25,12 @@ class CreateTableNode(ASTNode):
                  pos: Optional[int] = None):
         self.table_name = table_name
         self.columns = columns
-        self.constraints = constraints or []  # e.g. ('FOREIGN_KEY', 'dept_id', 'departments', 'dept_id')
+        self.constraints = constraints or []  # e.g. ('FOREIGN_KEY', 'dept_id', 'departments', 'dept_id') / ('PRIMARY_KEY','id','','')
         self.pos = pos
 
     def __repr__(self):
         cols = ", ".join(f"{n} {t}" for n, t in self.columns)
-        cons = "; ".join([f"{c[0]}({c[1]}) REF {c[2]}({c[3]})" for c in self.constraints]) if self.constraints else ""
+        cons = "; ".join([f"{c[0]}({c[1]}) REF {c[2]}({c[3]})" if c[0] == "FOREIGN_KEY" else f"{c[0]}({c[1]})" for c in self.constraints]) if self.constraints else ""
         return f"CreateTableNode({self.table_name}, [{cols}]{'; ' + cons if cons else ''})"
 
 
@@ -114,7 +114,7 @@ def token_to_symbol(tok: Optional[Token]) -> str:
                   "WHERE", "GROUP", "BY", "ORDER", "INSERT", "INTO", "VALUES",
                   "CREATE", "TABLE", "DELETE", "UPDATE", "SET",
                   "INT", "VARCHAR", "FLOAT", "BOOL",
-                  "FOREIGN", "KEY", "REFERENCES",
+                  "FOREIGN", "KEY", "REFERENCES", "PRIMARY",
                   "COUNT", "SUM", "AVG", "EXPLAIN"):
             return kw
         return kw
@@ -454,48 +454,79 @@ class Parser:
 
     # ---------------- CREATE ----------------
     def parse_create_table(self) -> CreateTableNode:
-        # 文法（用于可视化）
+        # LL(1) 调试用文法（左因子化，支持 VARCHAR(n) / 列级/表级主键 / 外键）
         grammar = {
             "CreateStmt": [["CREATE", "TABLE", "IDENTIFIER", "(", "DefList", ")", ";"]],
             "DefList": [["Def", "DefTail"]],
             "DefTail": [[",", "Def", "DefTail"], ["ε"]],
-            "Def": [["IDENTIFIER", "Type"], ["FOREIGN", "KEY", "(", "IDENTIFIER", ")", "REFERENCES", "IDENTIFIER", "(", "IDENTIFIER", ")"]],
-            "Type": [["INT"], ["VARCHAR"], ["FLOAT"], ["BOOL"]],
+            "Def": [
+                ["IDENTIFIER", "TypeWithOptParam", "ColConstraintOpt"],
+                ["PRIMARY", "KEY", "(", "IDENTIFIER", ")"],
+                ["FOREIGN", "KEY", "(", "IDENTIFIER", ")", "REFERENCES", "IDENTIFIER", "(", "IDENTIFIER", ")"]
+            ],
+            "TypeWithOptParam": [["INT"], ["VARCHAR", "VarcharParamOpt"], ["FLOAT"], ["BOOL"]],
+            "VarcharParamOpt": [["(", "NUMBER", ")"], ["ε"]],
+            "ColConstraintOpt": [["PRIMARY", "KEY"], ["ε"]],
         }
-        terminals = {"CREATE","TABLE","IDENTIFIER","(",")",",","INT","VARCHAR","FLOAT","BOOL",
-                     "FOREIGN","KEY","REFERENCES",";","#"}
+        terminals = {
+            "CREATE","TABLE","IDENTIFIER","(",")",",",";","#",
+            "INT","VARCHAR","FLOAT","BOOL",
+            "PRIMARY","KEY","FOREIGN","REFERENCES",
+            "NUMBER"
+        }
         self.run_ll1_debug(grammar, "CreateStmt", terminals)
 
+        # ===== 真正构建 AST =====
         self.consume("CREATE")
         self.consume("TABLE")
         table_tok = self.consume("IDENTIFIER")
         table_name = table_tok.value
         self.consume("(")
         columns: List[Tuple[str, str]] = []
-        constraints: List[Tuple[str,str,str,str]] = []
+        constraints: List[Tuple[str, str, str, str]] = []
 
         def parse_def():
             t = self.current_token()
             if not t:
                 raise Exception(self._format_err("DEF", None))
-            if isinstance(t.value, str) and t.value.upper() == "FOREIGN":
-                # FOREIGN KEY (col) REFERENCES ref_table(ref_col)
-                self.consume("FOREIGN")
+            up = str(t.value).upper() if isinstance(t.value, str) else str(t.value)
+
+            # 表级 PRIMARY KEY(start_col)
+            if up == "PRIMARY":
+                self.consume("PRIMARY"); self.consume("KEY"); self.consume("(")
+                pk_col = str(self.consume("IDENTIFIER").value)
+                self.consume(")")
+                constraints.append(("PRIMARY_KEY", pk_col, "", ""))
+                return
+
+            # FOREIGN KEY (col) REFERENCES ref_table(ref_col)
+            if up == "FOREIGN":
+                self.consume("FOREIGN"); self.consume("KEY"); self.consume("(")
+                local_col = str(self.consume("IDENTIFIER").value)
+                self.consume(")"); self.consume("REFERENCES")
+                ref_table = str(self.consume("IDENTIFIER").value)
+                self.consume("("); ref_col = str(self.consume("IDENTIFIER").value); self.consume(")")
+                constraints.append(("FOREIGN_KEY", local_col, ref_table, ref_col))
+                return
+
+            # 列定义：IDENTIFIER TypeWithOptParam ColConstraintOpt
+            col_tok = self.consume("IDENTIFIER")
+            type_tok = self.consume()  # INT / VARCHAR / FLOAT / BOOL
+            typ = str(type_tok.value).upper()
+
+            # 可选的 (NUMBER) 只消费，不纳入类型系统（你的类型系统使用上层字符串）
+            if typ == "VARCHAR" and self.current_token() and self.current_token().value == "(":
+                self.consume("(")
+                _len_tok = self.consume("NUMBER")
+                self.consume(")")
+
+            # 列级 PRIMARY KEY（可选）
+            if self.current_token() and isinstance(self.current_token().value, str) and self.current_token().value.upper() == "PRIMARY":
+                self.consume("PRIMARY")
                 self.consume("KEY")
-                self.consume("(")
-                local_col = self.consume("IDENTIFIER").value
-                self.consume(")")
-                self.consume("REFERENCES")
-                ref_table = self.consume("IDENTIFIER").value
-                self.consume("(")
-                ref_col = self.consume("IDENTIFIER").value
-                self.consume(")")
-                constraints.append(("FOREIGN_KEY", str(local_col), str(ref_table), str(ref_col)))
-            else:
-                # IDENTIFIER Type
-                col_tok = self.consume("IDENTIFIER")
-                type_tok = self.consume()  # INT/VARCHAR/FLOAT/BOOL 可能被 KEYWORD/IDENTIFIER
-                columns.append((str(col_tok.value), str(type_tok.value).upper()))
+                constraints.append(("PRIMARY_KEY", str(col_tok.value), "", ""))
+
+            columns.append((str(col_tok.value), typ))
 
         # 第一个 Def
         parse_def()
@@ -816,6 +847,7 @@ class Parser:
         self.consume("UPDATE")
         tbl_tok = self.consume("IDENTIFIER")
         table_name = tbl_tok.value
+
         self.consume("SET")
         assignments: List[Tuple[str, Any]] = []
 

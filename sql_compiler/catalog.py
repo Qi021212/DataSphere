@@ -1,5 +1,5 @@
 # sql_compiler/catalog.py
-# SQL编译器 - 目录管理（兼容 add_table / create_table、支持外键与行数维护）
+# SQL编译器 - 目录管理（兼容 add_table / create_table、支持外键与行数维护、主键持久化）
 
 import json
 import os
@@ -13,7 +13,8 @@ class Catalog:
       - 结构：
         {
           "users": {
-            "columns": [{"name": "id", "type": "INT"}, {"name": "name", "type": "VARCHAR"}],
+            "columns": [{"name": "id", "type": "INT"}, {"name": "name", "type": "VARCHAR(20)"}],
+            "primary_key": "id",                 # 新增：可选
             "row_count": 0,
             "constraints": [
               ["FOREIGN_KEY", "class_id", "class", "id"]
@@ -65,44 +66,87 @@ class Catalog:
         return list(self.tables.keys())
 
     def get_table_info(self, table_name: str) -> Optional[Dict[str, Any]]:
+        """
+        返回表的完整元信息字典：
+          { "columns": [...], "primary_key": str|None, "row_count": int, "constraints": [...] }
+        """
         return self.tables.get(table_name)
+
+    # 便捷：列工具
+    def has_column(self, table_name: str, column_name: str) -> bool:
+        info = self.get_table_info(table_name) or {}
+        return any(c.get("name") == column_name for c in info.get("columns", []))
+
+    def get_column_type(self, table_name: str, column_name: str) -> Optional[str]:
+        info = self.get_table_info(table_name) or {}
+        for c in info.get("columns", []):
+            if c.get("name") == column_name:
+                return c.get("type")
+        return None
+
+    def columns_map(self, table_name: str) -> Dict[str, str]:
+        """返回 {列名: 类型} 映射"""
+        info = self.get_table_info(table_name) or {}
+        return {c.get("name"): c.get("type") for c in info.get("columns", [])}
+
+    # ---------------- 主键管理 ----------------
+
+    def get_primary_key(self, table_name: str) -> Optional[str]:
+        info = self.get_table_info(table_name) or {}
+        return info.get("primary_key")
+
+    def set_primary_key(self, table_name: str, column_name: Optional[str]):
+        if table_name not in self.tables:
+            raise Exception(f"Table '{table_name}' does not exist")
+        if column_name is not None and not self.has_column(table_name, column_name):
+            raise Exception(f"Column '{column_name}' does not exist in table '{table_name}'")
+        self.tables[table_name]["primary_key"] = column_name
+        self._save_catalog()
 
     # ---------------- 创建 / 兼容方法 ----------------
 
     def create_table(self, table_name: str,
                      columns: List[Dict[str, str]],
-                     constraints: Optional[List[Tuple]] = None):
+                     constraints: Optional[List[Tuple]] = None,
+                     primary_key: Optional[str] = None):
         """
         新建表。
         :param table_name: 表名
-        :param columns: 形如 [{"name":"id","type":"INT"}, ...]
+        :param columns: 形如 [{"name":"id","type":"INT"}, {"name":"name","type":"VARCHAR(20)"}]
         :param constraints: 形如 [("FOREIGN_KEY", "col", "ref_table", "ref_col"), ...]
+        :param primary_key: 可选，主键列名（单列主键）
         """
         if self.table_exists(table_name):
             raise Exception(f"Table '{table_name}' already exists")
 
         # 基本校验（尽量宽松，避免和前端/编译阶段重复）
-        norm_cols = []
+        norm_cols: List[Dict[str, str]] = []
         for c in columns or []:
             if not isinstance(c, dict) or "name" not in c or "type" not in c:
                 raise Exception(f"Invalid column spec: {c}")
             norm_cols.append({"name": str(c["name"]), "type": str(c["type"]).upper()})
 
+        if primary_key is not None:
+            if not any(col["name"] == primary_key for col in norm_cols):
+                raise Exception(f"Primary key column '{primary_key}' is not defined in columns")
+
         self.tables[table_name] = {
             "columns": norm_cols,
+            "primary_key": primary_key,            # 新增
             "row_count": 0,
             "constraints": list(constraints or [])
         }
         self._save_catalog()
 
-    # 兼容老代码：add_table 与 create_table 等价
+    # 兼容老代码：add_table 与 create_table 等价（增加 primary_key 参数）
     def add_table(self, table_name: str, columns: List[Dict[str, str]],
-                  constraints: Optional[List[Tuple]] = None):
+                  constraints: Optional[List[Tuple]] = None,
+                  primary_key: Optional[str] = None):
         """
         兼容旧接口：等价于 create_table。
         某些模块（如 executor / planner 的旧版本）可能调用 add_table。
         """
-        self.create_table(table_name, columns, constraints)
+        self.create_table(table_name, columns, constraints, primary_key)
 
     # ---------------- 删除 / 更新 ----------------
 

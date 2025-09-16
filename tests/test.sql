@@ -139,3 +139,50 @@ VALUES (102, 'Bob', 99);
 -- 2. 插入部门，列数与值数不一致
 INSERT INTO departments(dept_id, dept_name)
 VALUES (2);
+
+
+-- 测试GROUP BY和ORDER BY
+-- 1. 创建 departments 表
+CREATE TABLE departments (
+    dept_id INT,
+    dept_name VARCHAR
+);
+
+-- 2. 创建 employees 表，并添加外键约束
+CREATE TABLE employees (
+    emp_id INT,
+    name VARCHAR,
+    salary FLOAT,
+    department_id INT,
+    FOREIGN KEY (department_id) REFERENCES departments(dept_id)
+);
+
+-- 3. 向 departments 表插入数据
+INSERT INTO departments(dept_id, dept_name) VALUES (1, 'Engineering');
+INSERT INTO departments(dept_id, dept_name) VALUES (2, 'Sales');
+INSERT INTO departments(dept_id, dept_name) VALUES (3, 'Marketing');
+INSERT INTO departments(dept_id, dept_name) VALUES (4, 'Human Resources');
+
+-- 4. 向 employees 表插入数据
+INSERT INTO employees(emp_id, name, salary, department_id) VALUES (101, 'Alice', 75000.00, 1);
+INSERT INTO employees(emp_id, name, salary, department_id) VALUES (102, 'Bob', 65000.00, 1);
+INSERT INTO employees(emp_id, name, salary, department_id) VALUES (103, 'Charlie', 55000.00, 2);
+INSERT INTO employees(emp_id, name, salary, department_id) VALUES (104, 'Diana', 60000.00, 2);
+INSERT INTO employees(emp_id, name, salary, department_id) VALUES (105, 'Eve', 70000.00, 3);
+INSERT INTO employees(emp_id, name, salary, department_id) VALUES (106, 'Frank', 50000.00, 3);
+INSERT INTO employees(emp_id, name, salary, department_id) VALUES (107, 'Grace', 80000.00, 1);
+INSERT INTO employees(emp_id, name, salary, department_id) VALUES (108, 'Heidi', 45000.00, 4);
+INSERT INTO employees(emp_id, name, salary, department_id) VALUES (109, 'Ivan', 90000.00, 1); -- Engineering 部门的高薪员工
+
+-- 测试用例 1: 基础分组与聚合
+-- 统计每个部门的员工人数，并按部门ID排序
+SELECT department_id, COUNT(*) AS employee_count
+FROM employees
+GROUP BY department_id
+ORDER BY department_id ASC;
+
+-- 测试用例 2: 统计每个部门平均工资，并按部门ID排序
+SELECT department_id, AVG(salary) AS avg_salary
+FROM employees
+GROUP BY department_id
+ORDER BY department_id ASC;

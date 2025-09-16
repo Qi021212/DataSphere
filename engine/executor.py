@@ -291,14 +291,61 @@ class Executor:
         if residual:
             raw = [r for r in raw if _evaluate_condition(r, residual)]
 
-        # 3) 聚合 or 普通投影/排序
+        # 3) 如果是聚合查询，直接调用 _execute_aggregates 并返回结果
         if aggregates:
-            return self._execute_aggregates(raw, aggregates, group_by, order_by, order_dir)
+            result = self._execute_aggregates(raw, aggregates, group_by, order_by, order_dir)
+            return result
 
+        # 4) 如果是普通查询，进行投影和排序
         rows = [self._project_row(row, columns) for row in raw]
         if order_by:
             rows = self._order_rows(rows, order_by, order_dir)
         return rows
+
+    # ---------- 内部：GROUP BY 执行 ----------
+    def _execute_group_by(self, rows: List[Dict[str, Any]], plan: ExecutionPlan) -> List[Dict[str, Any]]:
+        """执行 GROUP BY 操作，必须与聚合函数一起使用"""
+        group_by_col = plan.details.get("group_by")
+        aggregates: List[Dict[str, Any]] = plan.details.get("aggregates") or []
+
+        if not aggregates:
+            raise Exception("[执行错误] GROUP BY 必须与聚合函数 (COUNT/SUM/AVG) 一起使用")
+
+        # 规范化聚合项
+        aggs = [{
+            "func": a.get("func").upper(),
+            "arg": a.get("arg"),
+            "alias": a.get("alias")
+        } for a in aggregates]
+
+        # 创建分组
+        groups: Dict[Any, List[Dict[str, Any]]] = {}
+        for row in rows:
+            key = self._resolve_col_from_row(row, group_by_col)
+            groups.setdefault(key, []).append(row)
+
+        # 为每个分组计算聚合结果
+        result: List[Dict[str, Any]] = []
+        for gkey, bucket in groups.items():
+            one_row = {}
+            # 添加分组列
+            one_row[group_by_col] = gkey
+            # 计算每个聚合函数
+            for a in aggs:
+                val = self._agg_bucket(bucket, a["func"], a["arg"])
+                out_key = a["alias"] or f"{a['func']}({a['arg']})"
+                one_row[out_key] = val
+            result.append(one_row)
+
+        return result
+
+    # ---------- 内部：ORDER BY 执行 ----------
+    def _execute_order_by(self, rows: List[Dict[str, Any]], plan: ExecutionPlan) -> List[Dict[str, Any]]:
+        """执行 ORDER BY 操作"""
+        order_by_col = plan.details.get("order_by")
+        order_dir = plan.details.get("order_direction", "ASC") # 默认升序
+
+        return self._order_rows(rows, order_by_col, order_dir)
 
     # ---------- 内部：表源执行 with 谓词下推 ----------
     def _execute_table_source(self, ts_plan: Dict) -> List[Dict[str, Any]]:
@@ -389,9 +436,11 @@ class Executor:
                             order_by: Optional[str],
                             order_dir: Optional[str]) -> List[Dict[str, Any]]:
         # 规范化聚合项：{'func','arg','alias'}
-        aggs = [{"func": a.get("func").upper(),
-                 "arg": a.get("arg"),
-                 "alias": a.get("alias")} for a in aggregates]
+        aggs = [{
+            "func": a.get("func").upper(),
+            "arg": a.get("arg"),
+            "alias": a.get("alias")
+        } for a in aggregates]
 
         if group_by:
             # 分组键（单列）
@@ -403,13 +452,16 @@ class Executor:
             out: List[Dict[str, Any]] = []
             for gkey, bucket in groups.items():
                 one = {}
-                one[group_by] = gkey  # 输出分组列，以 group_by 原样为键
+                # 添加分组列
+                one[group_by] = gkey
+                # 计算并添加每个聚合函数的结果
                 for a in aggs:
                     val = self._agg_bucket(bucket, a["func"], a["arg"])
                     out_key = a["alias"] or f"{a['func']}({a['arg']})"
                     one[out_key] = val
                 out.append(one)
 
+            # 对分组后的结果进行排序
             if order_by:
                 out = self._order_rows(out, order_by, order_dir)
             return out
@@ -461,7 +513,8 @@ class Executor:
 
     def _project_row(self, row: Dict[str, Any], columns: List[str]) -> Dict[str, Any]:
         if not columns or columns == ["*"]:
-            return dict(row)
+            # 过滤掉所有包含 '.' 的键，只保留裸列名
+            return {k: v for k, v in row.items() if '.' not in k}
         out: Dict[str, Any] = {}
         for col_item in columns:
             if col_item == "*":
@@ -479,6 +532,22 @@ class Executor:
             v = r.get(key_name)
             return (1, None) if v is None else (0, v)
         return sorted(rows, key=_key, reverse=rev)
+
+    def _order_rows(self, rows: List[Dict[str, Any]], key_name: str, direction: Optional[str]) -> List[Dict[str, Any]]:
+        """根据指定的列名和方向对行进行排序"""
+        rev = (isinstance(direction, str) and direction.upper() == "DESC")
+
+        def _key_func(row):
+            # 尝试从行中获取排序键的值
+            val = self._resolve_col_from_row(row, key_name)
+            # 如果值是 None，我们将其放在最后（对于升序）或最前（对于降序）
+            # 通过返回一个元组 (priority, actual_value) 来实现
+            if val is None:
+                return (1, None) if not rev else (-1, None)
+            else:
+                return (0, val)
+
+        return sorted(rows, key=_key_func, reverse=rev)
 
     # ---------- 其他 ----------
     def _check_reference_exists(self, table_name, column_name, value):

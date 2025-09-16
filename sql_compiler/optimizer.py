@@ -1,4 +1,3 @@
-# sql_compiler/optimizer.py
 # 谓词下推（Predicate Pushdown）优化
 from dataclasses import dataclass
 from typing import List, Optional, Set, Tuple, Union

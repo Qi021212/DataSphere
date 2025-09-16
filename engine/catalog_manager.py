@@ -1,4 +1,4 @@
-#数据库引擎 - 目录管理
+# 数据库引擎 - 目录管理
 
 # engine/catalog_manager.py
 from sql_compiler.catalog import Catalog

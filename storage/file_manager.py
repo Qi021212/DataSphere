@@ -1,4 +1,3 @@
-# storage/file_manager.py
 import os
 import json
 import struct
@@ -224,7 +223,7 @@ class FileManager:
                 record_count = page.get_int(0)
                 next_page_id = page.get_int(4)
 
-                # 👇 关键修复：精确计算当前页的写入偏移量
+                # 精确计算当前页的写入偏移量
                 current_offset = 8  # 跳过页头 (记录数4字节 + 下一页ID4字节)
                 valid_record_count = 0  # 用于计数成功反序列化的记录
 

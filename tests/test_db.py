@@ -1,4 +1,3 @@
-# tests/test_db.py
 import unittest
 import os
 import shutil
@@ -9,7 +8,6 @@ from sql_compiler.planner import Planner
 from sql_compiler.catalog import Catalog
 from storage.file_manager import FileManager
 from engine.executor import Executor
-
 
 class TestDatabaseSystem(unittest.TestCase):
     def setUp(self):

@@ -1,4 +1,4 @@
-# sql_compiler/diag.py
+# 智能纠错提示
 from typing import Iterable, Optional, Tuple, List
 
 def levenshtein(a: str, b: str) -> int:

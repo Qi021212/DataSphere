@@ -1,4 +1,3 @@
-# output_formatter.py
 # 输出格式化：统一输出格式
 
 class OutputFormatter:

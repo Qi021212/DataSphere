@@ -1,4 +1,3 @@
-# sql_compiler/catalog.py
 # SQL编译器 - 目录管理（兼容 add_table / create_table、支持外键与行数维护、主键持久化）
 
 import json
@@ -138,7 +137,7 @@ class Catalog:
         }
         self._save_catalog()
 
-    # 兼容老代码：add_table 与 create_table 等价（增加 primary_key 参数）
+    # add_table 与 create_table 等价（增加 primary_key 参数）
     def add_table(self, table_name: str, columns: List[Dict[str, str]],
                   constraints: Optional[List[Tuple]] = None,
                   primary_key: Optional[str] = None):

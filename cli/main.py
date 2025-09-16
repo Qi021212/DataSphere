@@ -59,7 +59,7 @@ def _clean_statement_for_lex(statement: str) -> str:
 def _extract_smart_hints(msg: str):
     return [line.strip() for line in (msg or "").splitlines() if line.strip().startswith("智能提示：")]
 
-### NEW: 将一段包含多条 SQL 的文本切成“带分号的”语句（忽略字符串内的分号）
+###  将一段包含多条 SQL 的文本切成“带分号的”语句（忽略字符串内的分号）
 def _iter_sql_statements(text: str):
     buf, in_str, escape = [], False, False
     for ch in text:
@@ -89,8 +89,8 @@ def _iter_sql_statements(text: str):
 
 class DatabaseCLI:
     def __init__(self):
-        # —— 只实例化一次 Catalog（其内部若文件不存在会打印一次提示）
-        # >>> 修改：静默初始化，避免 Catalog 内部的 print 弹到终端
+        # 只实例化一次 Catalog（其内部若文件不存在会打印一次提示）
+        # 静默初始化，避免 Catalog 内部的 print 弹到终端
         _silent = StringIO()
         with redirect_stdout(_silent):
             self.catalog = Catalog()
@@ -105,7 +105,7 @@ class DatabaseCLI:
         self._success_cnt = 0
         self._total_cnt = 0
 
-        # >>> 修改：是否在终端展示“优化讲解（谓词下推）”
+        # 是否在终端展示“优化讲解（谓词下推）”
         self._show_optimize_to_console = False
 
     # ============== 详细编译日志 +（可选）执行 ==============
@@ -218,7 +218,7 @@ class DatabaseCLI:
                 print(h)
             return None
 
-    ### NEW: 批处理一个 .sql 文件（逐条语句执行 + 写入详细日志）
+    ### 批处理一个 .sql 文件（逐条语句执行 + 写入详细日志）
     def process_file(self, path: str):
         if not os.path.exists(path):
             print(f"[错误] 文件不存在: {path}")
@@ -271,7 +271,7 @@ class DatabaseCLI:
                 i += 1
 
     def run(self):
-        # === NEW: 若通过命令行参数传入 .sql 文件，先运行该文件后直接退出 ===
+        # 若通过命令行参数传入 .sql 文件，先运行该文件后直接退出 ===
         if len(sys.argv) >= 2 and sys.argv[1].lower().endswith(".sql"):
             self.process_file(sys.argv[1])
             # 退出时落盘日志 + 汇总统计
@@ -283,7 +283,7 @@ class DatabaseCLI:
             print(LOG_FILE)
             return
 
-        print("Welcome to SimpleDB CLI")
+        print("Welcome to DataSqhere CLI")
         print("多行输入；以 ';' 结束一条语句。输入 quit/exit 退出。")
         print("额外命令：:read <path>  或  :r <path>  —— 从文件读取并执行 SQL 脚本。")
 

@@ -1,4 +1,3 @@
-# sql_compiler/semantic.py
 # SQL 语义分析器：检查 AST 的语义正确性（表存在、列存在、类型匹配等）+ 智能提示
 from typing import List, Tuple, Optional, Dict
 from sql_compiler.catalog import Catalog  # ✅ 复用统一的目录类（持久化）

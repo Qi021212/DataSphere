@@ -1,4 +1,3 @@
-# sql_compiler/parser.py
 # 严格 LL(1) 辅助的解析器：先用 FIRST/FOLLOW+预测表做推导可视化（教学），再用递归下降构建 AST
 # 调试仿真不会消费实际 tokens
 
@@ -594,7 +593,7 @@ class Parser:
 
     # ---------------- SELECT ----------------
     def parse_select(self) -> SelectNode:
-        # 教学可视化用的 LL(1) 文法（支持聚合与布尔表达式）
+        #  LL(1) 文法（支持聚合与布尔表达式）
         grammar = {
             "SelectStmt": [["SELECT", "SelectList", "FROM", "TableRef", "JoinList", "WhereOpt", "GroupOpt", "OrderOpt", ";"]],
             "SelectList": [["*"], ["SelectItem", "SelectListTail"]],

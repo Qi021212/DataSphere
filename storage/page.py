@@ -1,4 +1,3 @@
-# storage/page.py
 import struct
 import os
 from typing import Optional

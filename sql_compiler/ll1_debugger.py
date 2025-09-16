@@ -1,5 +1,3 @@
-# sql_compiler/ll1_debugger.py
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 from typing import List, Dict, Set, Tuple, Callable, Optional, Any
 

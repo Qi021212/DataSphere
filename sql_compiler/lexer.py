@@ -1,4 +1,4 @@
-# sql_compiler/lexer.py
+# 词法分析
 import re
 
 # === 种别码映射（与现有流水线保持一致） ===

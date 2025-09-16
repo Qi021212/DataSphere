@@ -1,4 +1,3 @@
-# input_handler.py
 # 输入处理：支持 SQL 文件或标准输入
 
 import sys

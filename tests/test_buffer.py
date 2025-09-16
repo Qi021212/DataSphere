@@ -1,5 +1,3 @@
-# tests/test_buffer.py
-
 import unittest
 from unittest.mock import MagicMock, patch, call
 import sys

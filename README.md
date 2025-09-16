@@ -1,4 +1,5 @@
-# DataSphere
+> # DataSphere
+>
 
 **DataSphere** 是一个用 Python 实现的简易关系型数据库系统，作为《大型平台软件设计实习》的项目成果。该项目旨在实践数据库系统的核心概念，包括 SQL 编译（词法、语法、语义分析）、查询计划生成与优化、页式存储管理、缓冲池以及基本的执行引擎。
 
@@ -95,14 +96,15 @@ DataSphere 提供了两种主要的运行方式：
 
 可以将多条 SQL 语句写入一个 `.sql` 文件，然后一次性执行。
 
-1. 创建一个包含 SQL 语句的文本文件，例如 `script.sql`。
+1. 创建一个包含 SQL 语句的文本文件，例如 `tests/demo.sql`。
 
 2. 在终端中运行：
 
    ```bash
-   python main.py script.sql
-   # 或者如果有一个专门处理文件输入的脚本
-   # python run_script.py script.sql
+   python cli/main.py tests/demo.sql
+   # 或者在交互中：
+   python cli/main.py
+   ：read tests/demo.sql
    ```
 
 ## 支持的 SQL 语法
@@ -112,6 +114,7 @@ DataSphere 提供了两种主要的运行方式：
         *   支持 `INT`, `VARCHAR(N)` 数据类型。
 *   **数据操作语言 (DML)**:
     *   `INSERT INTO table_name VALUES (value1, value2, ...);`
+    *   `DELETE FROM table_name [WHERE condition];`
     *   `SELECT columns FROM table_name [WHERE condition];`
         *   `columns` 可以为 `*` 或具体列名列表。
         *   `condition` 支持 `=`, `!=`, `<`, `>`, `<=`, `>=` 比较操作符，以及 `AND` 连接。
@@ -119,7 +122,8 @@ DataSphere 提供了两种主要的运行方式：
         *   `condition` 支持 `=`, `!=`, `<`, `>`, `<=`, `>=` 比较操作符。
 *   **查询扩展**:
     *   `SELECT ... FROM table1 JOIN table2 ON condition;` (INNER JOIN)
-    *   `SELECT ... FROM table1 LEFT JOIN table2 ON condition;` (LEFT JOIN)
+    *   `SELECT ... FROM table1 GROUP BY condition;` (GROUP BY)
+    *   `SELECT ... FROM table1 ORDER BY condition;` (ORDER BY)
     *   `SELECT COUNT(*), SUM(column), AVG(column) FROM table_name [WHERE condition];`
 *   **元命令 (CLI)**:
     *   `exit;` 或 `quit;`: 退出 CLI。
@@ -198,10 +202,12 @@ UPDATE students SET age = 21 WHERE name = 'Alice';
 
 -- 简单聚合
 SELECT COUNT(*) AS total_students FROM students;
+SELECT AVG(age) FROM student;
 
--- 连接查询
+-- 扩展查询
 SELECT s.name, c.cname FROM students s JOIN courses c ON s.id = c.cid;
-
+SELECT age FROM student GROUP BY age;
+SELECT id, age FROM student WHERE age > 18 ORDER BY age DESC;
 ```
 
 ---

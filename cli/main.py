@@ -108,7 +108,7 @@ class DatabaseCLI:
         # 是否在终端展示“优化讲解（谓词下推）”
         self._show_optimize_to_console = False
 
-    # ============== 详细编译日志 +（可选）执行 ==============
+    # ============== 详细编译日志 +执行 ==============
     def process_and_log(self, sql_with_semicolon: str, actually_execute: bool = True):
         """
         完整处理一条 SQL，并把详细过程写入内存日志。
@@ -218,7 +218,7 @@ class DatabaseCLI:
                 print(h)
             return None
 
-    ### 批处理一个 .sql 文件（逐条语句执行 + 写入详细日志）
+    # 批处理一个 .sql 文件（逐条语句执行 + 写入详细日志）
     def process_file(self, path: str):
         if not os.path.exists(path):
             print(f"[错误] 文件不存在: {path}")
@@ -278,12 +278,12 @@ class DatabaseCLI:
             with open(LOG_FILE, "w", encoding="utf-8") as f:
                 f.write("=== 详细编译日志（本次会话） ===\n")
                 f.write("\n".join(self._log_lines))
-            print(f"✅ 成功处理 {self._success_cnt} / {self._total_cnt} 条 SQL 语句！")
-            print("🎉 SQL 编译器执行完成！详细编译日志已保存到：")
+            print(f"成功处理 {self._success_cnt} / {self._total_cnt} 条 SQL 语句！")
+            print("SQL 编译器执行完成！详细编译日志已保存到：")
             print(LOG_FILE)
             return
 
-        print("Welcome to DataSqhere CLI")
+        print("Welcome to DataSphere CLI")
         print("多行输入；以 ';' 结束一条语句。输入 quit/exit 退出。")
         print("额外命令：:read <path>  或  :r <path>  —— 从文件读取并执行 SQL 脚本。")
 
@@ -299,8 +299,8 @@ class DatabaseCLI:
             f.write("=== 详细编译日志（本次会话） ===\n")
             f.write("\n".join(self._log_lines))
 
-        print(f"✅ 成功处理 {self._success_cnt} / {self._total_cnt} 条 SQL 语句！")
-        print("🎉 SQL 编译器执行完成！详细编译日志已保存到：")
+        print(f"成功处理 {self._success_cnt} / {self._total_cnt} 条 SQL 语句！")
+        print("SQL 编译器执行完成！详细编译日志已保存到：")
         print(LOG_FILE)
 
 

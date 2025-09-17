@@ -1,9 +1,3 @@
--- ====================================================================
--- 0) 初始化（可选）：清表，避免重复创建错误（如果实现了 DROP TABLE）
--- DROP TABLE class;
--- DROP TABLE student;
-
--- ====================================================================
 -- 1) CREATE：包含主键 & VARCHAR(n)
 --    A. 列级主键   B. 表级主键   C. VARCHAR(上限) 与裸 VARCHAR
 -- ====================================================================
@@ -109,18 +103,6 @@ SELECT age FROM student GROUP BY age;
 
 -- 示例2：JOIN 后分组，按未限定列（你的文法允许）
 SELECT s.age FROM student s JOIN class c ON s.id = c.sid GROUP BY age;
-
--- ====================================================================
--- 8) 额外：EXPLAIN（如果已实现）
--- ====================================================================
--- EXPLAIN SELECT s.id, s.name
--- FROM student s JOIN class c ON s.id = c.sid
--- WHERE s.age > 18 AND c.name = 'CS101';
-
-
-
-
-
 
 
 

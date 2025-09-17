@@ -25,7 +25,7 @@
 *   **存储管理**: 基于文件的页式存储 (`4KB` 页)。
 *   **缓冲池**: 使用 LRU (Least Recently Used) /FIFO策略缓存页面，提高访问效率。
 *   **基本执行引擎**: 支持 `CREATE TABLE`, `INSERT`, `SELECT`, `UPDATE` 操作。
-*   **简单 JOIN**: 支持内连接 (INNER JOIN) 和左连接 (LEFT JOIN) 的逻辑计划生成。
+*   **简单 JOIN**: 支持内连接 (INNER JOIN) 的逻辑计划生成。
 *   **基本聚合**: 支持 `COUNT`, `SUM`, `AVG` 聚合函数。
 *   **元数据管理**: 通过 `Catalog` 管理表结构信息。
 
@@ -127,7 +127,6 @@ DataSphere 提供了两种主要的运行方式：
     *   `SELECT COUNT(*), SUM(column), AVG(column) FROM table_name [WHERE condition];`
 *   **元命令 (CLI)**:
     *   `exit;` 或 `quit;`: 退出 CLI。
-    *   `help;`: 显示帮助信息（如果已实现）。
 
 ## 项目结构
 
@@ -158,9 +157,7 @@ Datasphere/
 │   └── main.py                # 主程序入口
 ├── tests/                     # 测试文件
 │   ├── __init__.py
-│   ├── test_sql.py
-│   ├── test_storage.py
-│   └── test_db.py
+│   └── test_db.py             # SQL语句测试
 │   └── test_buffer.py         # 缓存功能测试
 ├── utils/					   # 工具类
 │   ├── __init__.py

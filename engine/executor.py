@@ -680,14 +680,6 @@ class Executor:
         return out
 
     def _order_rows(self, rows: List[Dict[str, Any]], key_name: str, direction: Optional[str]) -> List[Dict[str, Any]]:
-        rev = (isinstance(direction, str) and direction.upper() == "DESC")
-        # 缺值放后
-        def _key(r):
-            v = r.get(key_name)
-            return (1, None) if v is None else (0, v)
-        return sorted(rows, key=_key, reverse=rev)
-
-    def _order_rows(self, rows: List[Dict[str, Any]], key_name: str, direction: Optional[str]) -> List[Dict[str, Any]]:
         """根据指定的列名和方向对行进行排序"""
         rev = (isinstance(direction, str) and direction.upper() == "DESC")
 

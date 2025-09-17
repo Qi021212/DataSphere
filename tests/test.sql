@@ -314,3 +314,11 @@ SELECT department_id, AVG(salary) AS avg_salary
 FROM employees
 GROUP BY department_id
 ORDER BY department_id ASC;
+
+-- 测试用例3：涉及外键的级联更新
+UPDATE departments SET dept_id=5 WHERE dept_id=2;
+
+-- 测试用例4：多表查询
+SELECT e.name,e.salary,d.dept_name
+FROM employees e
+JOIN departments d ON d.dept_id =e.department_id;

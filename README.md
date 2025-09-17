@@ -127,7 +127,6 @@ DataSphere 提供了两种主要的运行方式：
     *   `SELECT COUNT(*), SUM(column), AVG(column) FROM table_name [WHERE condition];`
 *   **元命令 (CLI)**:
     *   `exit;` 或 `quit;`: 退出 CLI。
-    *   `help;`: 显示帮助信息（如果已实现）。
 
 ## 项目结构
 
@@ -158,9 +157,7 @@ Datasphere/
 │   └── main.py                # 主程序入口
 ├── tests/                     # 测试文件
 │   ├── __init__.py
-│   ├── test_sql.py
-│   ├── test_storage.py
-│   └── test_db.py
+│   └── test_db.py             # SQL语句测试
 │   └── test_buffer.py         # 缓存功能测试
 ├── utils/					   # 工具类
 │   ├── __init__.py
